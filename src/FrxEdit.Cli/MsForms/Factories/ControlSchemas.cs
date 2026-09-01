@@ -1012,30 +1012,76 @@ internal sealed class SpinButtonControlSchema : SpinLikeControlSchema
 
 internal sealed class ImageControlSchema : IGeneratedControlSchema
 {
-    private const uint PropMask = 0x0000_0200;
+    private const uint SizePropMask = 1u << 9;
+    private const uint PicturePropMask = 1u << 10;
 
     public string Type => "Image";
     public uint SiteFlags => 0x0000_0013; // tabStop + visible + streamed.
 
     public byte[] BuildObjectPayload(GeneratedControlRequest request)
     {
+        var picture = ReadPictureStream(request);
+        var propMask = SizePropMask;
+
+        using var dataBlock = new MemoryStream();
+        if (picture.Length > 0)
+        {
+            propMask |= PicturePropMask;
+            MsFormsFactoryBinary.WriteUInt16(dataBlock, 0xFFFF);
+        }
+
         using var extra = new MemoryStream();
         MsFormsFactoryBinary.WriteSize(extra, request.Width, request.Height);
-        return MsFormsFactoryBinary.BuildVersionedControl(0, 2, PropMask, [], extra.ToArray());
+        var control = MsFormsFactoryBinary.BuildVersionedControl(0, 2, propMask, dataBlock.ToArray(), extra.ToArray());
+        return picture.Length == 0 ? control : [.. control, .. picture];
     }
 
-    public IReadOnlyDictionary<string, object?> BuildMetadata(GeneratedControlRequest request, int objectPayloadSize) =>
-        new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+    public IReadOnlyDictionary<string, object?> BuildMetadata(GeneratedControlRequest request, int objectPayloadSize)
+    {
+        var hasPicture = ReadPictureStream(request).Length > 0;
+        var propMask = SizePropMask | (hasPicture ? PicturePropMask : 0);
+        var metadata = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
         {
             ["parser"] = "msOFormsImage",
             ["sizeSource"] = "imageExtraDataBlock",
-            ["propMask"] = "0x00000200",
+            ["propMask"] = $"0x{propMask:X8}",
             ["objectStreamSize"] = objectPayloadSize,
             ["siteBitFlags"] = $"0x{SiteFlags:X8}",
             ["tabStop"] = true,
             ["visible"] = true,
             ["streamed"] = true
         };
+
+        if (hasPicture)
+        {
+            metadata["pictureMarker"] = 0xFFFF;
+        }
+
+        return metadata;
+    }
+
+    private static byte[] ReadPictureStream(GeneratedControlRequest request)
+    {
+        var value = MsFormsFactoryBinary.GetString(request.Properties, "picture");
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return [];
+        }
+
+        if (!value.StartsWith("base64:", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new CliException($"Generated Image '{request.Name}' picture must be resolved to a base64 native picture stream.");
+        }
+
+        try
+        {
+            return Convert.FromBase64String(value["base64:".Length..]);
+        }
+        catch (FormatException ex)
+        {
+            throw new CliException($"Generated Image '{request.Name}' picture contains invalid base64 data: {ex.Message}");
+        }
+    }
 }
 
 internal sealed class TabStripControlSchema : IGeneratedControlSchema
