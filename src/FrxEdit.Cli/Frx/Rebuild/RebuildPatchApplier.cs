@@ -621,9 +621,12 @@ internal static class RebuildPatchApplier
             maxId++;
             props["isAddedControl"] = true;
             
-            if (patchedByName != null && patchedByName.TryGetValue(name, out var requested))
+            var requestedProperties = patchedByName != null && patchedByName.TryGetValue(name, out var requested)
+                ? requested
+                : null;
+            if (requestedProperties is not null)
             {
-                foreach (var kvp in requested)
+                foreach (var kvp in requestedProperties)
                 {
                     ApplyPropertyToDictionary(name, props, kvp.Key, kvp.Value, patchDir);
                 }
@@ -649,9 +652,18 @@ internal static class RebuildPatchApplier
             props["siteName"] = name;
             props["siteId"] = maxId;
             props["id"] = maxId;
-            props["tabIndex"] = add.Properties is not null && add.Properties.TryGetValue("tabIndex", out var tabIndexElement)
-                ? RequireUInt16(name, "tabIndex", tabIndexElement)
-                : NextTabIndexForParent(existingControls.Concat(result), parent);
+            int? requestedTabIndex = null;
+            if (add.Properties is not null && add.Properties.TryGetValue("tabIndex", out var addTabIndex))
+            {
+                requestedTabIndex = RequireUInt16(name, "tabIndex", addTabIndex);
+            }
+            else if (requestedProperties is not null && requestedProperties.TryGetValue("tabIndex", out var propertyTabIndex))
+            {
+                requestedTabIndex = RequireUInt16(name, "tabIndex", propertyTabIndex);
+            }
+
+            props["tabIndex"] = requestedTabIndex
+                ?? NextTabIndexForParent(existingControls.Concat(result), parent);
 
             if (!string.IsNullOrWhiteSpace(add.Caption))
             {
