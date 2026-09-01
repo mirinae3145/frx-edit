@@ -11,8 +11,10 @@ internal static class PatchDocumentGenerator
     [
         "caption", "text", "value", "tag", "controlTipText", "controlSource", "accelerator",
         "textAlign", "paragraphAlign", "backColor", "foreColor", "borderColor", "fontName",
-        "fontSize", "fontWeight", "fontEffects", "fontItalic", "fontUnderline", "fontStrikethrough",
-        "enabled", "visible", "locked", "tabIndex", "tabStop", "default", "cancel", "backStyle",
+        "fontSize", "fontWeight", "fontEffects", "fontBold", "fontItalic", "fontUnderline", "fontStrikethrough",
+        "fontCharSet", "fontPitchAndFamily",
+        "enabled", "visible", "locked", "siteBitFlags", "tabIndex", "tabStop", "default", "cancel",
+        "siteAutoSize", "preserveHeight", "fitToParent", "selectChild", "backStyle",
         "alignment", "wordWrap", "autoSize", "autoTab", "autoWordSelect", "hideSelection",
         "integralHeight", "multiLine", "selectionMargin", "enterKeyBehavior", "tabKeyBehavior",
         "enterFieldBehavior", "dragBehavior", "imeMode", "takeFocusOnClick", "maxLength",
@@ -20,25 +22,30 @@ internal static class PatchDocumentGenerator
         "boundColumn", "textColumn", "columnCount", "listRows", "matchEntry", "listStyle",
         "showDropButtonWhen", "dropButtonStyle", "multiSelect", "columnHeads", "matchRequired", 
         "editable", "mousePointer", "picturePosition", "picture", "mouseIcon",
-        "pictureSizeMode", "pictureAlignment", "pictureTiling",
-        "min", "max", "position", "smallChange", "largeChange", "orientation",
+        "pictureSizeMode", "pictureAlignment", "pictureTiling", "keepScrollBarsVisible", "rightToLeft",
+        "min", "max", "position", "smallChange", "largeChange", "orientation", "delay", "proportionalThumb",
         "logicalWidth", "logicalHeight", "scrollLeft", "scrollTop",
-        "logicalWidthPt", "logicalHeightPt", "scrollLeftPt", "scrollTopPt"
+        "logicalWidthPt", "logicalHeightPt", "scrollLeftPt", "scrollTopPt",
+        "formBooleanProperties", "formDrawBuffer",
+        "tabCaptions", "tabTooltips", "tabNames", "tabTags", "tabAccelerators", "tabFlags", "style"
     ];
 
     private static readonly HashSet<string> RootFormPropertyNames = new(StringComparer.OrdinalIgnoreCase)
     {
         "formBackColor", "formForeColor", "formBorderColor", "formCaption", "formBorderStyle",
         "formMousePointer", "formScrollBars", "formCycle", "formSpecialEffect", "formPictureAlignment",
-        "formPictureSizeMode", "formZoom", "formPicture", "formMouseIcon", "nextAvailableId", "displayedWidth", "displayedHeight",
+        "formPictureSizeMode", "formZoom", "formGroupCount", "nextAvailableId", "displayedWidth", "displayedHeight",
         "displayedWidthPt", "displayedHeightPt", "logicalWidth", "logicalHeight", "logicalWidthPt",
         "logicalHeightPt", "scrollLeft", "scrollTop", "scrollLeftPt", "scrollTopPt", "formBooleanProperties",
         "StartUpPosition", "ShowModal", "Tag", "Left", "Top", "Width", "Height", "ClientLeft", "ClientTop", "ClientWidth", "ClientHeight",
-        "DrawBuffer", "WhatsThisButton", "WhatsThisHelp", "picture", "mouseIcon"
+        "Caption", "formDrawBuffer", "DrawBuffer", "WhatsThisButton", "WhatsThisHelp"
     };
 
     private static string CanonicalizeRootFormPropertyName(string name)
     {
+        if (name.Equals("formCaption", StringComparison.OrdinalIgnoreCase)) return "formCaption";
+        if (name.Equals("formDrawBuffer", StringComparison.OrdinalIgnoreCase)) return "formDrawBuffer";
+        if (name.Equals("formGroupCount", StringComparison.OrdinalIgnoreCase)) return "formGroupCount";
         if (name.StartsWith("form", StringComparison.OrdinalIgnoreCase))
         {
             var rest = name[4..];
@@ -58,7 +65,10 @@ internal static class PatchDocumentGenerator
         if (name.Equals("ClientTop", StringComparison.OrdinalIgnoreCase)) return "clientTop";
         if (name.Equals("ClientWidth", StringComparison.OrdinalIgnoreCase)) return "clientWidth";
         if (name.Equals("ClientHeight", StringComparison.OrdinalIgnoreCase)) return "clientHeight";
+        if (name.Equals("Caption", StringComparison.OrdinalIgnoreCase)) return "caption";
         if (name.Equals("DrawBuffer", StringComparison.OrdinalIgnoreCase)) return "drawBuffer";
+        if (name.Equals("WhatsThisButton", StringComparison.OrdinalIgnoreCase)) return "whatsThisButton";
+        if (name.Equals("WhatsThisHelp", StringComparison.OrdinalIgnoreCase)) return "whatsThisHelp";
         return name;
     }
 
@@ -94,6 +104,9 @@ internal static class PatchDocumentGenerator
                     if (kvp.Key.Equals("formBooleanProperties", StringComparison.OrdinalIgnoreCase) && kvp.Value is string hex && hex.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
                     {
                         var bits = Convert.ToUInt32(hex[2..], 16);
+                        // Keep the raw word so unknown/reserved bits survive while also
+                        // projecting the documented named flags for human editing.
+                        formProps["formBooleanProperties"] = $"0x{bits:X8}";
                         var transformed = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
                         {
                             ["enabled"] = (bits & 1) != 0,
@@ -138,10 +151,18 @@ internal static class PatchDocumentGenerator
                 }
             }
         }
+        foreach (var propertyName in formProps.Keys)
+        {
+            if (!RebuildPatchApplier.SupportsExportedRootProperty(propertyName))
+            {
+                throw new InvalidOperationException($"Exporter contract violation: root property '{propertyName}' has no Writer consumer.");
+            }
+        }
         properties[formName] = ConvertToJsonElements(formProps);
 
         // Map controls
-        foreach (var control in raw.Controls)
+        var controlsToMap = asTemplate ? OrderForTemplateCreation(raw.Controls) : raw.Controls;
+        foreach (var control in controlsToMap)
         {
             var controlProps = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
             
@@ -160,7 +181,7 @@ internal static class PatchDocumentGenerator
                 {
                     if (control.Properties.TryGetValue(name, out var value))
                     {
-                        controlProps[name] = value;
+                        controlProps[name] = ProjectCanonicalProperty(name, value);
                     }
                     else if (values.TryGetValue(name, out var defaultValue))
                     {
@@ -180,6 +201,32 @@ internal static class PatchDocumentGenerator
                             controlProps[kvp.Key] = kvp.Value;
                         }
                     }
+                }
+
+                // Container captions use the FormControl field name in R but the
+                // existing canonical J contract calls the semantic simply caption.
+                if (control.Properties.TryGetValue("formCaption", out var formCaption))
+                {
+                    controlProps["caption"] = formCaption;
+                }
+                if (control.Type.Equals("TabStrip", StringComparison.OrdinalIgnoreCase) &&
+                    control.Properties.TryGetValue("listIndex", out var listIndex))
+                {
+                    controlProps["value"] = listIndex;
+                }
+                if ((control.Type.Equals("TabStrip", StringComparison.OrdinalIgnoreCase) ||
+                     control.Type.Equals("MultiPage", StringComparison.OrdinalIgnoreCase)) &&
+                    control.Properties.TryGetValue("tabStyle", out var tabStyle))
+                {
+                    // `style` is the canonical JSON name. Keep accepting the raw
+                    // `tabStyle` spelling in the Writer for older hand-authored patches.
+                    controlProps.Remove("tabStyle");
+                    controlProps["style"] = tabStyle;
+                }
+                if (control.Type.Equals("Frame", StringComparison.OrdinalIgnoreCase) &&
+                    control.Properties.TryGetValue("formSpecialEffect", out var formSpecialEffect))
+                {
+                    controlProps["specialEffect"] = formSpecialEffect;
                 }
             }
             else
@@ -205,7 +252,9 @@ internal static class PatchDocumentGenerator
             var cleanedProps = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
             foreach (var kvp in controlProps)
             {
-                if (IsRebuiltMorphProperty(kvp.Key, controlProps, control.Type))
+                var isLayoutProperty = kvp.Key is "leftPt" or "topPt" or "widthPt" or "heightPt";
+                if (IsRebuiltMorphProperty(kvp.Key, controlProps, control.Type) &&
+                    (isLayoutProperty || RebuildPatchApplier.SupportsExportedObjectProperty(control.Type, kvp.Key)))
                 {
                     cleanedProps[kvp.Key] = kvp.Value;
                 }
@@ -218,6 +267,17 @@ internal static class PatchDocumentGenerator
             if (control.Parent != null)
             {
                 cleanedProps["parent"] = control.Parent;
+            }
+
+            foreach (var propertyName in cleanedProps.Keys.Where(name =>
+                         name is not "$action" and not "$newName" and not "type" and not "parent" and
+                         not "leftPt" and not "topPt" and not "widthPt" and not "heightPt"))
+            {
+                if (!RebuildPatchApplier.SupportsExportedObjectProperty(control.Type, propertyName))
+                {
+                    throw new InvalidOperationException(
+                        $"Exporter contract violation: {control.Type} property '{propertyName}' has no Writer consumer.");
+                }
             }
 
             RecordControlAudit(semanticAudit, control, cleanedProps, values, asTemplate);
@@ -241,6 +301,82 @@ internal static class PatchDocumentGenerator
             Properties = properties,
             Add = addList
         };
+    }
+
+    private static object? ProjectCanonicalProperty(string name, object? value)
+    {
+        if (!name.Equals("tabFlags", StringComparison.OrdinalIgnoreCase) ||
+            value is not IEnumerable<Dictionary<string, object?>> flags)
+        {
+            return value;
+        }
+
+        return flags.Select(flag => new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["raw"] = flag.TryGetValue("raw", out var raw) ? raw : null,
+            ["visible"] = flag.TryGetValue("visible", out var visible) ? visible : null,
+            ["enabled"] = flag.TryGetValue("enabled", out var enabled) ? enabled : null
+        }).ToList();
+    }
+
+    private static IReadOnlyList<ControlInfo> OrderForTemplateCreation(IReadOnlyList<ControlInfo> controls)
+    {
+        var originalOrder = controls
+            .Select((control, index) => (control.Name, index))
+            .ToDictionary(item => item.Name, item => item.index, StringComparer.OrdinalIgnoreCase);
+        var childrenByParent = controls
+            .GroupBy(control => control.Parent ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                group => group.Key,
+                group => group
+                    .OrderBy(control => GetSiteOrder(control, originalOrder[control.Name]))
+                    .ThenBy(control => originalOrder[control.Name])
+                    .ToList(),
+                StringComparer.OrdinalIgnoreCase);
+
+        var result = new List<ControlInfo>(controls.Count);
+        var queuedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var level = childrenByParent.TryGetValue(string.Empty, out var roots)
+            ? roots
+            : [];
+        while (level.Count > 0)
+        {
+            var nextLevel = new List<ControlInfo>();
+            foreach (var control in level)
+            {
+                if (!queuedNames.Add(control.Name))
+                {
+                    continue;
+                }
+
+                result.Add(control);
+                if (childrenByParent.TryGetValue(control.Name, out var children))
+                {
+                    nextLevel.AddRange(children);
+                }
+            }
+            level = nextLevel;
+        }
+
+        result.AddRange(controls.Where(control => queuedNames.Add(control.Name)));
+        return result;
+    }
+
+    private static long GetSiteOrder(ControlInfo control, int fallback)
+    {
+        if (control.Properties?.TryGetValue("siteLocalOffset", out var value) is true)
+        {
+            return value switch
+            {
+                int number => number,
+                long number => number,
+                uint number => number,
+                JsonElement { ValueKind: JsonValueKind.Number } element when element.TryGetInt64(out var number) => number,
+                _ => fallback
+            };
+        }
+
+        return fallback;
     }
 
     private static Dictionary<string, JsonElement> ConvertToJsonElements(Dictionary<string, object?> dict)
@@ -601,30 +737,40 @@ internal static class PatchDocumentGenerator
 
     private static bool IsRebuiltMorphProperty(string name, Dictionary<string, object?> properties, string controlType)
     {
+        if (name.ToLowerInvariant() is
+            "sitebitflags" or "tabindex" or "tabstop" or "visible" or "default" or "cancel" or
+            "siteautosize" or "preserveheight" or "fittoparent" or "selectchild" or
+            "controltiptext" or "controlsource" or "rowsource" or "tag" or "helpcontextid" or "groupid" or
+            "leftpt" or "toppt" or "widthpt" or "heightpt")
+        {
+            return true;
+        }
+
         if (string.Equals(controlType, "CheckBox", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(controlType, "OptionButton", StringComparison.OrdinalIgnoreCase))
         {
             return name.ToLowerInvariant() is
                 "caption" or "value" or "groupname" or "fontname" or "fontsize" or "fontweight" or "fontitalic" or "fontunderline" or "fontstrikethrough" or "fontcharset" or "backcolor" or
+                "fontbold" or "fontpitchandfamily" or
                 "forecolor" or "enabled" or "locked" or "backstyle" or "alignment" or "wordwrap" or
                 "autosize" or "imemode" or "specialeffect" or "mousepointer" or "pictureposition" or
                 "picture" or "mouseicon" or
-                "accelerator" or "textalign" or "tabindex" or "tabstop" or "visible" or
+                "accelerator" or "textalign" or "paragraphalign" or "controltiptext" or "fonteffects" or "tabindex" or "tabstop" or "visible" or
                 "leftpt" or "toppt" or "widthpt" or "heightpt";
         }
 
         if (string.Equals(controlType, "CommandButton", StringComparison.OrdinalIgnoreCase))
         {
             return name.ToLowerInvariant() is
-                "caption" or "fontname" or "fontsize" or "fontweight" or "fontitalic" or "fontunderline" or "fontstrikethrough" or "fontcharset" or "backcolor" or "forecolor" or
-                "enabled" or "locked" or "wordwrap" or "autosize" or "mousepointer" or "pictureposition" or
-                "picture" or "mouseicon" or "picturesizemode" or "picturealignment" or "picturetiling" or
-                "accelerator" or "takefocusonclick" or "textalign" or "paragraphalign" or "tabindex" or "tabstop" or "visible" or "default" or "cancel" or
+                "caption" or "fontname" or "fontsize" or "fontweight" or "fonteffects" or "fontbold" or "fontitalic" or "fontunderline" or "fontstrikethrough" or "fontcharset" or "fontpitchandfamily" or "backcolor" or "forecolor" or
+                "enabled" or "locked" or "backstyle" or "wordwrap" or "autosize" or "imemode" or "mousepointer" or "pictureposition" or
+                "picture" or "mouseicon" or
+                "accelerator" or "takefocusonclick" or "textalign" or "paragraphalign" or "controltiptext" or "tabindex" or "tabstop" or "visible" or "default" or "cancel" or
                 "leftpt" or "toppt" or "widthpt" or "heightpt";
         }
 
         return name.ToLowerInvariant() is
-            "value" or "fontname" or "fontsize" or "fontweight" or "fontitalic" or "fontunderline" or "fontstrikethrough" or "fontcharset" or "backcolor" or "forecolor" or "bordercolor" or
+            "value" or "fontname" or "fontsize" or "fontweight" or "fonteffects" or "fontbold" or "fontitalic" or "fontunderline" or "fontstrikethrough" or "fontcharset" or "fontpitchandfamily" or "backcolor" or "forecolor" or "bordercolor" or
             "enabled" or "locked" or "backstyle" or "autosize" or "autotab" or "autowordselect" or
             "dragbehavior" or "enterfieldbehavior" or "enterkeybehavior" or "hideselection" or
             "integralheight" or "multiline" or "selectionmargin" or "tabkeybehavior" or "wordwrap" or
@@ -634,8 +780,10 @@ internal static class PatchDocumentGenerator
             "showdropbuttonwhen" or "dropbuttonstyle" or "multiselect" or "columnheads" or
             "matchrequired" or "editable" or "displaystyle" or "caption" or "groupname" or
             "pictureposition" or "picture" or "mouseicon" or "picturesizemode" or "picturealignment" or "picturetiling" or
-            "accelerator" or "alignment" or "tabindex" or "tabstop" or "visible" or
+            "accelerator" or "alignment" or "paragraphalign" or "controltiptext" or "tabindex" or "tabstop" or "visible" or
             "min" or "max" or "position" or "smallchange" or "largechange" or "orientation" or "delay" or "proportionalthumb" or
+            "formbooleanproperties" or "formdrawbuffer" or "keepscrollbarsvisible" or "righttoleft" or
+            "tabcaptions" or "tabtooltips" or "tabnames" or "tabtags" or "tabaccelerators" or "tabflags" or "style" or
             "scrollleft" or "scrolltop" or "logicalwidth" or "logicalheight" or
             "scrollleftpt" or "scrolltoppt" or "logicalwidthpt" or "logicalheightpt" or
             "leftpt" or "toppt" or "widthpt" or "heightpt";

@@ -4,9 +4,20 @@ internal static class RebuildPatchApplier
     {
         "caption",
         "value",
+        "listIndex",
+        "style",
+        "tabStyle",
         "groupName",
         "fontName",
         "fontSize",
+        "fontWeight",
+        "fontEffects",
+        "fontBold",
+        "fontItalic",
+        "fontUnderline",
+        "fontStrikethrough",
+        "fontCharSet",
+        "fontPitchAndFamily",
         "backColor",
         "foreColor",
         "borderColor",
@@ -23,6 +34,7 @@ internal static class RebuildPatchApplier
         "takeFocusOnClick",
         "borderStyle",
         "specialEffect",
+        "formSpecialEffect",
         "textAlign",
         "paragraphAlign",
         "maxLength",
@@ -51,18 +63,61 @@ internal static class RebuildPatchApplier
         "integralHeight",
         "columnHeads",
         "matchRequired",
-        "editable"
+        "editable",
+        "picture",
+        "mouseIcon",
+        "pictureSizeMode",
+        "pictureAlignment",
+        "pictureTiling",
+        "keepScrollBarsVisible",
+        "rightToLeft",
+        "min",
+        "max",
+        "position",
+        "smallChange",
+        "largeChange",
+        "orientation",
+        "delay",
+        "proportionalThumb",
+        "logicalWidth",
+        "logicalHeight",
+        "scrollLeft",
+        "scrollTop",
+        "logicalWidthPt",
+        "logicalHeightPt",
+        "scrollLeftPt",
+        "scrollTopPt",
+        "formBooleanProperties",
+        "formDrawBuffer",
+        "drawBuffer",
+        "tabCaptions",
+        "tabTooltips",
+        "tabNames",
+        "tabTags",
+        "tabAccelerators",
+        "tabFlags",
+        "pageNames",
+        "pageCaptions"
     };
 
     private static readonly HashSet<string> FormSitePropertyNames = new(StringComparer.OrdinalIgnoreCase)
     {
+        "siteBitFlags",
         "tabIndex",
         "controlTipText",
         "controlSource",
+        "rowSource",
+        "tag",
+        "helpContextId",
+        "groupId",
         "tabStop",
         "visible",
         "default",
-        "cancel"
+        "cancel",
+        "siteAutoSize",
+        "preserveHeight",
+        "fitToParent",
+        "selectChild"
     };
 
     private static readonly HashSet<string> RootFormPropertyNames = new(StringComparer.OrdinalIgnoreCase)
@@ -79,18 +134,84 @@ internal static class RebuildPatchApplier
         "formPictureAlignment",
         "formPictureSizeMode",
         "formZoom",
+        "formGroupCount",
+        "backColor",
+        "foreColor",
+        "borderColor",
+        "borderStyle",
+        "mousePointer",
+        "scrollBars",
+        "cycle",
+        "specialEffect",
+        "pictureAlignment",
+        "pictureSizeMode",
+        "zoom",
         "nextAvailableId",
         "displayedWidth",
         "displayedHeight",
         "displayedWidthPt",
         "displayedHeightPt",
+        "widthPt",
+        "heightPt",
         "logicalWidth",
         "logicalHeight",
         "logicalWidthPt",
         "logicalHeightPt",
         "scrollLeft",
-        "scrollTop"
+        "scrollTop",
+        "scrollLeftPt",
+        "scrollTopPt",
+        "caption",
+        "clientWidth",
+        "clientHeight",
+        "clientLeft",
+        "clientTop",
+        "left",
+        "top",
+        "width",
+        "height",
+        "startUpPosition",
+        "showModal",
+        "whatsThisButton",
+        "whatsThisHelp",
+        "tag",
+        "drawBuffer",
+        "formDrawBuffer",
+        "formBooleanProperties",
+        "enabled",
+        "pictureTiling",
+        "keepScrollBarsVisible",
+        "rightToLeft"
     };
+
+    private static readonly string[] FontPropertyNames =
+    [
+        "fontName", "fontSize", "fontWeight", "fontEffects", "fontBold", "fontItalic",
+        "fontUnderline", "fontStrikethrough", "fontCharSet", "fontPitchAndFamily",
+        "textAlign", "paragraphAlign"
+    ];
+
+    private static readonly string[] MorphVariousPropertyNames =
+    [
+        "enabled", "locked", "backStyle", "alignment", "wordWrap", "autoSize", "autoTab",
+        "autoWordSelect", "hideSelection", "integralHeight", "multiLine", "selectionMargin",
+        "enterKeyBehavior", "tabKeyBehavior", "enterFieldBehavior", "dragBehavior", "imeMode",
+        "columnHeads", "matchRequired", "editable"
+    ];
+
+    private static readonly string[] ContainerPropertyNames =
+    [
+        "enabled", "pictureTiling", "keepScrollBarsVisible", "rightToLeft",
+        "logicalWidth", "logicalHeight", "scrollLeft", "scrollTop",
+        "logicalWidthPt", "logicalHeightPt", "scrollLeftPt", "scrollTopPt",
+        "formBooleanProperties", "formDrawBuffer", "drawBuffer"
+    ];
+
+    private static readonly string[] TabArrayPropertyNames =
+    [
+        "tabCaptions", "tabTooltips", "tabNames", "tabTags", "tabAccelerators", "tabFlags",
+        "pageNames", "pageCaptions"
+    ];
 
     public static LayoutInspection ApplyObjectPropertyPatch(LayoutInspection source, PatchDocument patch, bool allowFormSitePatch = false, string? formName = null, string? patchDir = null, WriterProvenanceAuditCollector? writerAudit = null)
     {
@@ -119,10 +240,18 @@ internal static class RebuildPatchApplier
             {
                 if (key is not null && patchedByName.TryGetValue(key, out var formPatches))
                 {
+                    var originalFrxFormControl = frxFormControl;
                     var newFrxFormControl = new Dictionary<string, object?>(frxFormControl, StringComparer.OrdinalIgnoreCase);
-                    foreach (var (propName, propVal) in formPatches)
+                    foreach (var (propName, propVal) in OrderPropertyApplications(formPatches))
                     {
                         ApplyFormPropertyToDictionary(key, newFrxFormControl, propName, propVal, patchDir);
+                    }
+                    foreach (var propertyName in formPatches.Keys)
+                    {
+                        if (!ReconstructionIntentBuilder.RootPropertyEqual(originalFrxFormControl, newFrxFormControl, propertyName))
+                        {
+                            ValidateExistingRootMutation(key, originalFrxFormControl, propertyName);
+                        }
                     }
                     frxFormControl = newFrxFormControl;
                     break;
@@ -210,7 +339,284 @@ internal static class RebuildPatchApplier
             controls.AddRange(BuildAddedControls(source.Controls, controls, patch.Add, patchDir, patchedByName, layoutByName, writerAudit));
         }
 
+        controls = SynchronizeMultiPageMetadata(source.Controls, controls, patchedByName, renameByName);
+
+        var hasMaterializedAdditions = controls.Any(control =>
+            control.Properties is not null && IsAddedControlMetadata(control.Properties));
+        if (allowFormSitePatch &&
+            (hasMaterializedAdditions || removedControls.Count > 0 || patch.Move is { Count: > 0 }) &&
+            !PatchRequestsRootProperty(patch, formName, "nextAvailableId"))
+        {
+            frxFormControl = SynchronizeRootNextAvailableId(frxFormControl, controls);
+        }
+
         return source with { Controls = controls, RemovedControls = removedControls, RemovedStoragePaths = removalPlan.StoragePaths, FrxFormControl = frxFormControl };
+    }
+
+    private static bool PatchRequestsRootProperty(PatchDocument patch, string? formName, string propertyName)
+    {
+        if (patch.Properties is null)
+        {
+            return false;
+        }
+
+        foreach (var key in new[] { formName, "UserForm", "Form", "root" })
+        {
+            if (!string.IsNullOrWhiteSpace(key) &&
+                patch.Properties.TryGetValue(key, out var properties) &&
+                properties.ContainsKey(propertyName))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static Dictionary<string, object?>? SynchronizeRootNextAvailableId(
+        Dictionary<string, object?>? formProperties,
+        IReadOnlyList<ControlInfo> controls)
+    {
+        if (formProperties is null ||
+            (!formProperties.ContainsKey("nextAvailableId") && !formProperties.ContainsKey("nextAvailableIdOffset")))
+        {
+            return formProperties;
+        }
+
+        var maxDirectSiteId = controls
+            .Where(control => string.IsNullOrWhiteSpace(control.Parent))
+            .Select(control => control.Properties is not null && TryGetInt(control.Properties, "siteId", out var siteId)
+                ? siteId
+                : control.Properties is not null && TryGetInt(control.Properties, "id", out var id)
+                    ? id
+                    : 0)
+            .DefaultIfEmpty(0)
+            .Max();
+        if (maxDirectSiteId <= 0)
+        {
+            return formProperties;
+        }
+
+        var synchronized = new Dictionary<string, object?>(formProperties, StringComparer.OrdinalIgnoreCase)
+        {
+            ["nextAvailableId"] = checked((uint)(maxDirectSiteId + 1))
+        };
+        return synchronized;
+    }
+
+    private static List<ControlInfo> SynchronizeMultiPageMetadata(
+        IReadOnlyList<ControlInfo> sourceControls,
+        List<ControlInfo> targetControls,
+        IReadOnlyDictionary<string, Dictionary<string, JsonElement>> patchedByName,
+        IReadOnlyDictionary<string, string> renameByName)
+    {
+        var sourceByName = sourceControls.ToDictionary(control => control.Name, StringComparer.OrdinalIgnoreCase);
+        var reverseRenames = renameByName.ToDictionary(pair => pair.Value, pair => pair.Key, StringComparer.OrdinalIgnoreCase);
+        var result = targetControls.ToList();
+
+        for (var controlIndex = 0; controlIndex < result.Count; controlIndex++)
+        {
+            var multiPage = result[controlIndex];
+            if (!multiPage.Type.Equals("MultiPage", StringComparison.OrdinalIgnoreCase) || multiPage.Properties is null)
+            {
+                continue;
+            }
+
+            var sourceName = reverseRenames.TryGetValue(multiPage.Name, out var renamedSourceName)
+                ? renamedSourceName
+                : multiPage.Name;
+            if (!sourceByName.TryGetValue(sourceName, out var sourceMultiPage) || sourceMultiPage.Properties is null)
+            {
+                // Generated MultiPages already receive metadata from the exact TabStrip schema
+                // request that produced their internal object stream.
+                continue;
+            }
+
+            patchedByName.TryGetValue(multiPage.Name, out var requestedMultiPageProperties);
+            if (requestedMultiPageProperties is null && !sourceName.Equals(multiPage.Name, StringComparison.OrdinalIgnoreCase))
+            {
+                patchedByName.TryGetValue(sourceName, out requestedMultiPageProperties);
+            }
+
+            var pages = result
+                .Where(control => control.Type.Equals("Page", StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(control.Parent, multiPage.Name, StringComparison.OrdinalIgnoreCase))
+                .OrderBy(control => control.Properties is not null && TryGetInt(control.Properties, "multiPagePageIndex", out var pageIndex)
+                    ? pageIndex
+                    : int.MaxValue)
+                .ThenBy(control => control.Name, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (pages.Count == 0)
+            {
+                continue;
+            }
+
+            var properties = new Dictionary<string, object?>(multiPage.Properties, StringComparer.OrdinalIgnoreCase);
+            properties["tabNames"] = BuildEffectiveMultiPageStrings(
+                "tabNames", pages, sourceMultiPage.Properties, requestedMultiPageProperties,
+                page => page.Name);
+            properties["tabCaptions"] = BuildEffectiveMultiPageStrings(
+                "tabCaptions", pages, sourceMultiPage.Properties, requestedMultiPageProperties,
+                GetPageCaptionForMetadata, useExplicitPageCaption: true);
+            properties["tabTooltips"] = BuildEffectiveMultiPageStrings(
+                "tabTooltips", pages, sourceMultiPage.Properties, requestedMultiPageProperties, _ => string.Empty);
+            properties["tabTags"] = BuildEffectiveMultiPageStrings(
+                "tabTags", pages, sourceMultiPage.Properties, requestedMultiPageProperties, _ => string.Empty);
+            properties["tabAccelerators"] = BuildEffectiveMultiPageStrings(
+                "tabAccelerators", pages, sourceMultiPage.Properties, requestedMultiPageProperties, _ => string.Empty);
+            properties["tabFlags"] = BuildEffectiveMultiPageFlags(
+                pages, sourceMultiPage.Properties, requestedMultiPageProperties);
+
+            result[controlIndex] = multiPage with { Properties = properties };
+        }
+
+        return result;
+    }
+
+    private static IReadOnlyList<string> BuildEffectiveMultiPageStrings(
+        string propertyName,
+        IReadOnlyList<ControlInfo> pages,
+        Dictionary<string, object?> sourceProperties,
+        IReadOnlyDictionary<string, JsonElement>? requestedProperties,
+        Func<ControlInfo, string> fallback,
+        bool alwaysUseFallback = false,
+        bool useExplicitPageCaption = false)
+    {
+        if (requestedProperties is not null &&
+            requestedProperties.ContainsKey(propertyName) &&
+            MsFormsFactoryBinary.GetStringList(
+                new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+                {
+                    [propertyName] = requestedProperties[propertyName]
+                },
+                propertyName) is { } explicitlyRequested)
+        {
+            if (explicitlyRequested.Count != pages.Count)
+            {
+                throw new CliException($"MultiPage property '{propertyName}' contains {explicitlyRequested.Count} entries; expected {pages.Count}.");
+            }
+
+            return explicitlyRequested.ToArray();
+        }
+
+        var originalValues = MsFormsFactoryBinary.GetStringList(sourceProperties, propertyName);
+        var values = new List<string>(pages.Count);
+        foreach (var page in pages)
+        {
+            var value = fallback(page);
+            var pageProperties = page.Properties;
+            var hasExplicitPageCaption = useExplicitPageCaption &&
+                pageProperties is not null &&
+                (pageProperties.ContainsKey("caption") ||
+                 pageProperties.ContainsKey("tabCaption") ||
+                 pageProperties.ContainsKey("formCaption"));
+            if (!alwaysUseFallback &&
+                !hasExplicitPageCaption &&
+                pageProperties is not null &&
+                !IsAddedControlMetadata(pageProperties) &&
+                TryGetInt(pageProperties, "multiPagePageIndex", out var originalIndex) &&
+                originalValues is not null &&
+                originalIndex >= 0 && originalIndex < originalValues.Count)
+            {
+                value = originalValues[originalIndex];
+            }
+
+            values.Add(value);
+        }
+
+        return values;
+    }
+
+    private static IReadOnlyList<Dictionary<string, object?>> BuildEffectiveMultiPageFlags(
+        IReadOnlyList<ControlInfo> pages,
+        Dictionary<string, object?> sourceProperties,
+        IReadOnlyDictionary<string, JsonElement>? requestedProperties)
+    {
+        IReadOnlyList<uint>? requestedFlags = null;
+        if (requestedProperties is not null && requestedProperties.TryGetValue("tabFlags", out var requestedValue))
+        {
+            requestedFlags = MsFormsFactoryBinary.GetUInt32List(
+                new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase) { ["tabFlags"] = requestedValue },
+                "tabFlags");
+            if (requestedFlags is null || requestedFlags.Count != pages.Count)
+            {
+                throw new CliException($"MultiPage property 'tabFlags' contains {requestedFlags?.Count ?? 0} entries; expected {pages.Count}.");
+            }
+        }
+
+        var sourceFlags = GetMultiPageFlagValues(sourceProperties, "tabFlags") ?? [];
+        var defaultFlag = sourceFlags.Count > 0 ? sourceFlags[0] : 3u;
+        var effective = new List<uint>(pages.Count);
+        for (var index = 0; index < pages.Count; index++)
+        {
+            if (requestedFlags is not null)
+            {
+                effective.Add(requestedFlags[index]);
+                continue;
+            }
+
+            var page = pages[index];
+            var pageProperties = page.Properties;
+            var flag = defaultFlag;
+            if (pageProperties is not null &&
+                !IsAddedControlMetadata(pageProperties) &&
+                TryGetInt(pageProperties, "multiPagePageIndex", out var originalIndex) &&
+                originalIndex >= 0 && originalIndex < sourceFlags.Count)
+            {
+                flag = sourceFlags[originalIndex];
+            }
+            effective.Add(flag);
+        }
+
+        return effective.Select(flag => new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["raw"] = flag,
+            ["visible"] = (flag & 0x0000_0001u) != 0,
+            ["enabled"] = (flag & 0x0000_0002u) != 0
+        }).ToList();
+    }
+
+    private static IReadOnlyList<uint>? GetMultiPageFlagValues(
+        Dictionary<string, object?> properties,
+        string propertyName)
+    {
+        if (MsFormsFactoryBinary.GetUInt32List(properties, propertyName) is { } directValues)
+        {
+            return directValues;
+        }
+
+        if (!properties.TryGetValue(propertyName, out var raw) ||
+            raw is not IEnumerable<Dictionary<string, object?>> dictionaries)
+        {
+            return null;
+        }
+
+        var values = new List<uint>();
+        foreach (var dictionary in dictionaries)
+        {
+            if (MsFormsFactoryBinary.GetUInt32(dictionary, "raw") is not uint value)
+            {
+                return null;
+            }
+            values.Add(value);
+        }
+
+        return values;
+    }
+
+    private static bool IsAddedControlMetadata(Dictionary<string, object?> properties) =>
+        MsFormsFactoryBinary.GetBool(properties, "isAddedControl") == true;
+
+    private static string GetPageCaptionForMetadata(ControlInfo page)
+    {
+        if (page.Properties is not null)
+        {
+            if (TryGetString(page.Properties, "tabCaption", out var tabCaption)) return tabCaption;
+            if (TryGetString(page.Properties, "caption", out var caption)) return caption;
+            if (TryGetString(page.Properties, "formCaption", out var formCaption)) return formCaption;
+        }
+
+        return page.Name;
     }
 
     public static void ValidateObjectPatch(PatchDocument patch, bool allowFormSitePatch = false, string? formName = null)
@@ -253,14 +659,14 @@ internal static class RebuildPatchApplier
                 {
                     if (!RootFormPropertyNames.Contains(propertyName))
                     {
-                        continue;
+                        throw new CliException($"Property '{propertyName}' is not supported for the root UserForm.");
                     }
                 }
                 else
                 {
                     if (!ObjectPropertyNames.Contains(propertyName) && !(allowFormSitePatch && FormSitePropertyNames.Contains(propertyName)))
                     {
-                        continue;
+                        throw new CliException($"Property '{propertyName}' is not supported for control '{controlName}'.");
                     }
                 }
             }
@@ -569,6 +975,7 @@ internal static class RebuildPatchApplier
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var entriesByName = new Dictionary<string, AdditionPlanEntry>(StringComparer.OrdinalIgnoreCase);
 
+        var sourceOrder = 0;
         foreach (var add in additions)
         {
             var name = add.Name?.Trim();
@@ -606,7 +1013,7 @@ internal static class RebuildPatchApplier
                     ? null
                     : add.Parent.Trim();
             var requestedTabIndex = GetRequestedTabIndex(add, name, patchedByName);
-            entriesByName[name] = new AdditionPlanEntry(add, name, type!, parent, template, requestedTabIndex);
+            entriesByName[name] = new AdditionPlanEntry(add, name, type!, parent, template, requestedTabIndex, sourceOrder++);
         }
 
         var depthByName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
@@ -618,9 +1025,7 @@ internal static class RebuildPatchApplier
 
         return entriesByName.Values
             .OrderBy(entry => depthByName[entry.Name])
-            .ThenBy(entry => entry.Parent ?? string.Empty, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(entry => entry.RequestedTabIndex ?? int.MaxValue)
-            .ThenBy(entry => entry.Name, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(entry => entry.SourceOrder)
             .ToList();
 
         int GetDepth(AdditionPlanEntry entry)
@@ -680,7 +1085,8 @@ internal static class RebuildPatchApplier
         string Type,
         string? Parent,
         ControlInfo? Template,
-        int? RequestedTabIndex);
+        int? RequestedTabIndex,
+        int SourceOrder);
 
     private static GeneratedPagePlan BuildGeneratedPagePlan(
         AdditionPlanEntry entry,
@@ -696,23 +1102,32 @@ internal static class RebuildPatchApplier
             : new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
         if (patchedByName is not null && patchedByName.TryGetValue(entry.Name, out var requestedProperties))
         {
-            foreach (var (propertyName, propertyValue) in requestedProperties)
+            foreach (var (propertyName, propertyValue) in OrderPropertyApplications(requestedProperties))
             {
                 ApplyPropertyToDictionary(entry.Name, entry.Type, props, propertyName, propertyValue, patchDir);
             }
         }
 
-        if (!string.IsNullOrWhiteSpace(entry.Patch.Caption))
+        if (entry.Patch.Caption is not null)
         {
+            if (!SupportsExportedObjectProperty(entry.Type, "caption"))
+            {
+                throw new CliException($"Property 'caption' is not supported for {entry.Type} control '{entry.Name}'.");
+            }
             props["caption"] = entry.Patch.Caption;
         }
 
-        if (!string.IsNullOrWhiteSpace(entry.Patch.Value))
+        if (entry.Patch.Value is not null)
         {
+            if (!SupportsExportedObjectProperty(entry.Type, "value"))
+            {
+                throw new CliException($"Property 'value' is not supported for {entry.Type} control '{entry.Name}'.");
+            }
             props["value"] = entry.Patch.Value;
         }
 
-        foreach (var (propertyName, propertyValue) in entry.Patch.Properties ?? new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase))
+        foreach (var (propertyName, propertyValue) in OrderPropertyApplications(
+                     entry.Patch.Properties ?? new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase)))
         {
             ApplyAddPropertyToDictionary(entry.Name, entry.Type, props, propertyName, propertyValue, patchDir);
         }
@@ -729,14 +1144,17 @@ internal static class RebuildPatchApplier
             rawHeight = layout.RawHeight ?? layout.Height ?? ToRawPoints(layout.HeightPt) ?? rawHeight;
         }
 
-        var caption = TryGetString(props, "caption", out var requestedCaption) && !string.IsNullOrWhiteSpace(requestedCaption)
+        var caption = props.ContainsKey("caption") && TryGetString(props, "caption", out var requestedCaption)
             ? requestedCaption
-            : TryGetString(props, "tabCaption", out var templateCaption) && !string.IsNullOrWhiteSpace(templateCaption)
+            : props.ContainsKey("tabCaption") && TryGetString(props, "tabCaption", out var templateCaption)
                 ? templateCaption
-            : entry.Name;
+                : props.ContainsKey("formCaption") && TryGetString(props, "formCaption", out var formCaption)
+                    ? formCaption
+                    : entry.Name;
         var tabIndex = entry.RequestedTabIndex ?? pageIndex;
         props["tabCaption"] = caption;
         props.Remove("caption");
+        props.Remove("formCaption");
         props["tabIndex"] = tabIndex;
 
         return new GeneratedPagePlan(entry, props, tabIndex, left, top, rawWidth, rawHeight, caption);
@@ -762,8 +1180,7 @@ internal static class RebuildPatchApplier
             .ToDictionary(
                 group => group.Key,
                 group => (IReadOnlyList<AdditionPlanEntry>)group
-                    .OrderBy(entry => entry.RequestedTabIndex ?? int.MaxValue)
-                    .ThenBy(entry => entry.Name, StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(entry => entry.SourceOrder)
                     .ToList(),
                 StringComparer.OrdinalIgnoreCase);
         var consumedExplicitPages = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -819,15 +1236,25 @@ internal static class RebuildPatchApplier
                 : new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
             maxId++;
             props["isAddedControl"] = true;
+            // Property overlays need the control-specific MS-OFORMS file defaults
+            // before a generated payload and its parser metadata exist.
+            props["controlType"] = type;
             
             var requestedProperties = patchedByName != null && patchedByName.TryGetValue(name, out var requested)
                 ? requested
                 : null;
             if (requestedProperties is not null)
             {
-                foreach (var kvp in requestedProperties)
+                foreach (var kvp in OrderPropertyApplications(requestedProperties))
                 {
-                    ApplyPropertyToDictionary(name, type, props, kvp.Key, kvp.Value, patchDir);
+                    if (template is null)
+                    {
+                        ApplyAddPropertyToDictionary(name, type, props, kvp.Key, kvp.Value, patchDir);
+                    }
+                    else
+                    {
+                        ApplyPropertyToDictionary(name, type, props, kvp.Key, kvp.Value, patchDir);
+                    }
                 }
             }
 
@@ -864,17 +1291,26 @@ internal static class RebuildPatchApplier
             props["tabIndex"] = requestedTabIndex
                 ?? NextTabIndexForParent(existingControls.Concat(result), parent);
 
-            if (!string.IsNullOrWhiteSpace(add.Caption))
+            if (add.Caption is not null)
             {
+                if (!SupportsExportedObjectProperty(type, "caption"))
+                {
+                    throw new CliException($"Property 'caption' is not supported for {type} control '{name}'.");
+                }
                 props["caption"] = add.Caption;
             }
 
-            if (!string.IsNullOrWhiteSpace(add.Value))
+            if (add.Value is not null)
             {
+                if (!SupportsExportedObjectProperty(type, "value"))
+                {
+                    throw new CliException($"Property 'value' is not supported for {type} control '{name}'.");
+                }
                 props["value"] = add.Value;
             }
 
-            foreach (var (propertyName, value) in add.Properties ?? new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase))
+            foreach (var (propertyName, value) in OrderPropertyApplications(
+                         add.Properties ?? new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase)))
             {
                 ApplyAddPropertyToDictionary(name, type, props, propertyName, value, patchDir);
             }
@@ -920,7 +1356,8 @@ internal static class RebuildPatchApplier
                     rawWidth ?? 0,
                     rawHeight ?? 0,
                     generatedStoragePath,
-                    BuildGeneratedPageSiteFlags(props, pageIndex == selectedPageIndex));
+                    BuildGeneratedPageSiteFlags(props, pageIndex == selectedPageIndex),
+                    props);
                 writerAudit?.RecordGeneratedStorage(
                     name,
                     "Page",
@@ -941,11 +1378,11 @@ internal static class RebuildPatchApplier
                 props["cbSite"] = generated.SitePayload.Length - 4;
                 props["parser"] = "msOFormsFormSiteData";
                 props["siteParser"] = "msOFormsOleSiteConcrete";
-                props["siteBitFlags"] = $"0x{generated.SiteFlags:X8}";
-                props["siteBitFlagsRaw"] = unchecked((int)generated.SiteFlags);
-                props["visible"] = (generated.SiteFlags & (1u << 1)) != 0;
+                GeneratedControlFactory.SynchronizeSiteFlagMetadata(props, generated.SiteFlags);
                 props["formControlParser"] = "msOFormsFormControl";
                 props["formPropMask"] = "0x0C000C48";
+                props["formBooleanProperties"] = $"0x{(MsFormsFactoryBinary.GetUInt32(props, "formBooleanProperties") ?? 0x0000_C004u):X8}";
+                props["formDrawBuffer"] = MsFormsFactoryBinary.GetUInt32(props, "formDrawBuffer") ?? 32_000u;
                 props["sizeSource"] = "formControlDisplayedSize";
                 props["displayedWidth"] = rawWidth ?? 0;
                 props["displayedHeight"] = rawHeight ?? 0;
@@ -973,7 +1410,8 @@ internal static class RebuildPatchApplier
                     rawWidth ?? 0,
                     rawHeight ?? 0,
                     add.Caption,
-                    ownedStoragePath);
+                    ownedStoragePath,
+                    props);
                 writerAudit?.RecordGeneratedStorage(
                     name,
                     "Frame",
@@ -1022,7 +1460,8 @@ internal static class RebuildPatchApplier
                             page.Top,
                             page.Width,
                             page.Height,
-                            BuildGeneratedPageSiteFlags(page.Properties, index == selectedPageIndex)))
+                            BuildGeneratedPageSiteFlags(page.Properties, index == selectedPageIndex),
+                            page.Properties))
                         .ToList();
                     foreach (var page in explicitPagePlans)
                     {
@@ -1062,7 +1501,8 @@ internal static class RebuildPatchApplier
                             0,
                             rawWidth ?? 0,
                             rawHeight ?? 0,
-                            BuildGeneratedPageSiteFlags(props: null, i == selectedPageIndex)));
+                            BuildGeneratedPageSiteFlags(props: null, i == selectedPageIndex),
+                            null));
                     }
                 }
 
@@ -1076,7 +1516,8 @@ internal static class RebuildPatchApplier
                     rawHeight ?? 0,
                     ownedStoragePath,
                     pageDefinitions,
-                    selectedPageIndex);
+                    selectedPageIndex,
+                    props);
                 writerAudit?.RecordGeneratedStorage(
                     name,
                     "MultiPage",
@@ -1128,11 +1569,11 @@ internal static class RebuildPatchApplier
                     pageProps["tabIndex"] = explicitPage?.TabIndex ?? i;
                     pageProps["parser"] = "msOFormsFormSiteData";
                     pageProps["siteParser"] = "msOFormsOleSiteConcrete";
-                    pageProps["siteBitFlags"] = $"0x{page.SiteFlags:X8}";
-                    pageProps["siteBitFlagsRaw"] = unchecked((int)page.SiteFlags);
-                    pageProps["visible"] = (page.SiteFlags & (1u << 1)) != 0;
+                    GeneratedControlFactory.SynchronizeSiteFlagMetadata(pageProps, page.SiteFlags);
                     pageProps["formControlParser"] = "msOFormsFormControl";
                     pageProps["formPropMask"] = "0x0C000C48";
+                    pageProps["formBooleanProperties"] = $"0x{(MsFormsFactoryBinary.GetUInt32(pageProps, "formBooleanProperties") ?? 0x0000_C004u):X8}";
+                    pageProps["formDrawBuffer"] = MsFormsFactoryBinary.GetUInt32(pageProps, "formDrawBuffer") ?? 32_000u;
                     pageProps["sizeSource"] = "formControlDisplayedSize";
                     pageProps["displayedWidth"] = explicitPage?.Width ?? rawWidth ?? 0;
                     pageProps["displayedHeight"] = explicitPage?.Height ?? rawHeight ?? 0;
@@ -1276,30 +1717,7 @@ internal static class RebuildPatchApplier
     private static uint BuildGeneratedPageSiteFlags(Dictionary<string, object?>? props, bool isSelectedPage)
     {
         var flags = isSelectedPage ? 0x0004_0023u : 0x0004_0021u;
-        if (props is null)
-        {
-            return flags;
-        }
-
-        foreach (var (propertyName, bit) in new[]
-        {
-            ("tabStop", 0),
-            ("visible", 1),
-            ("default", 2),
-            ("cancel", 3)
-        })
-        {
-            var value = MsFormsFactoryBinary.GetBool(props, propertyName);
-            if (value is null)
-            {
-                continue;
-            }
-
-            var mask = 1u << bit;
-            flags = value.Value ? flags | mask : flags & ~mask;
-        }
-
-        return flags;
+        return GeneratedControlFactory.BuildSiteFlags(flags, props);
     }
 
     private static IReadOnlyDictionary<string, byte[]> GeneratedStreams(IReadOnlyDictionary<string, object?> metadata)
@@ -1332,6 +1750,235 @@ internal static class RebuildPatchApplier
         return Math.Min(max + 1, ushort.MaxValue);
     }
 
+    private static void ValidateExistingControlMutation(ControlInfo control, ControlInfo target, string propertyName)
+    {
+        var props = control.Properties
+            ?? throw new CliException($"Cannot patch '{control.Name}': control has no object metadata.");
+        var normalized = propertyName.ToLowerInvariant();
+
+        switch (normalized)
+        {
+            case "tag":
+                RequireExistingMetadata(control.Name, propertyName, props, "tagSpan");
+                return;
+            case "rowsource":
+                RequireExistingMetadata(control.Name, propertyName, props, "rowSourceSpan");
+                return;
+            case "helpcontextid":
+                RequireExistingMetadata(control.Name, propertyName, props, "helpContextIdOffset");
+                return;
+            case "groupid":
+                RequireExistingMetadata(control.Name, propertyName, props, "groupIdOffset");
+                return;
+            case "tabindex":
+                RequireExistingMetadata(control.Name, propertyName, props, "tabIndexOffset");
+                return;
+            case "tabstop":
+            case "visible":
+            case "default":
+            case "cancel":
+            case "siteautosize":
+            case "preserveheight":
+            case "fittoparent":
+            case "selectchild":
+                RequireExistingMetadata(control.Name, propertyName, props, "siteBitFlagsRawOffset");
+                return;
+            case "sitebitflags":
+                RequireExistingMetadata(control.Name, propertyName, props, "siteBitFlagsRawOffset");
+                var sourceFlags = MsFormsFactoryBinary.GetUInt32(props, "siteBitFlagsRaw") ??
+                                  MsFormsFactoryBinary.GetUInt32(props, "siteBitFlags") ?? 0u;
+                var targetProperties = target.Properties!;
+                var targetFlags = MsFormsFactoryBinary.GetUInt32(targetProperties, "siteBitFlagsRaw") ??
+                                  MsFormsFactoryBinary.GetUInt32(targetProperties, "siteBitFlags") ?? 0u;
+                const uint structuralSiteFlagMask = (1u << 4) | (1u << 18);
+                if (((sourceFlags ^ targetFlags) & structuralSiteFlagMask) != 0)
+                {
+                    throw new CliException(
+                        $"Cannot patch '{control.Name}.siteBitFlags': changing streamed/promoteControls requires a structural object/storage conversion.");
+                }
+                return;
+        }
+
+        if (!IsContainerControlType(control.Type))
+        {
+            return;
+        }
+
+        switch (normalized)
+        {
+            case "caption":
+                // A Page caption is carried by its parent MultiPage's internal TabStrip.
+                // Pages commonly have no FormControl caption field of their own.
+                if (!control.Type.Equals("Page", StringComparison.OrdinalIgnoreCase))
+                {
+                    RequireExistingMetadata(control.Name, propertyName, props, "formCaptionSpan");
+                }
+                break;
+            case "formbooleanproperties":
+            case "enabled":
+            case "picturetiling":
+            case "keepscrollbarsvisible":
+            case "righttoleft":
+                RequireExistingMetadata(control.Name, propertyName, props, "formBooleanPropertiesRawOffset");
+                break;
+            case "formdrawbuffer":
+            case "drawbuffer":
+                RequireExistingMetadata(control.Name, propertyName, props, "formDrawBufferOffset");
+                break;
+            case "specialeffect":
+            case "formspecialeffect":
+                RequireExistingMetadata(control.Name, propertyName, props, "formSpecialEffectOffset");
+                break;
+            case "logicalwidth":
+            case "logicalwidthpt":
+                RequireExistingMetadata(control.Name, propertyName, props, "logicalWidthOffset");
+                break;
+            case "logicalheight":
+            case "logicalheightpt":
+                RequireExistingMetadata(control.Name, propertyName, props, "logicalHeightOffset");
+                break;
+            case "scrollleft":
+            case "scrollleftpt":
+                RequireExistingMetadata(control.Name, propertyName, props, "scrollLeftOffset");
+                break;
+            case "scrolltop":
+            case "scrolltoppt":
+                RequireExistingMetadata(control.Name, propertyName, props, "scrollTopOffset");
+                break;
+        }
+    }
+
+    private static void ValidateExistingRootMutation(
+        string formName,
+        Dictionary<string, object?> props,
+        string propertyName)
+    {
+        switch (propertyName.ToLowerInvariant())
+        {
+            // These are textual FRM properties, not optional FormControl fields.
+            case "caption":
+            case "clientwidth":
+            case "clientheight":
+            case "clientleft":
+            case "clienttop":
+            case "left":
+            case "top":
+            case "width":
+            case "height":
+            case "startupposition":
+            case "showmodal":
+            case "whatsthisbutton":
+            case "whatsthishelp":
+            case "tag":
+            case "drawbuffer":
+                return;
+            case "formcaption":
+                RequireExistingMetadata(formName, propertyName, props, "formCaptionSpan");
+                return;
+            case "formbackcolor":
+            case "backcolor":
+                RequireExistingMetadata(formName, propertyName, props, "formBackColorRawOffset", "formBackColorOffset");
+                return;
+            case "formforecolor":
+            case "forecolor":
+                RequireExistingMetadata(formName, propertyName, props, "formForeColorRawOffset", "formForeColorOffset");
+                return;
+            case "formbordercolor":
+            case "bordercolor":
+                RequireExistingMetadata(formName, propertyName, props, "formBorderColorRawOffset", "formBorderColorOffset");
+                return;
+            case "formbooleanproperties":
+            case "enabled":
+            case "picturetiling":
+            case "keepscrollbarsvisible":
+            case "righttoleft":
+                RequireExistingMetadata(formName, propertyName, props, "formBooleanPropertiesRawOffset");
+                return;
+            case "formborderstyle":
+            case "borderstyle":
+                RequireExistingMetadata(formName, propertyName, props, "formBorderStyleOffset");
+                return;
+            case "formmousepointer":
+            case "mousepointer":
+                RequireExistingMetadata(formName, propertyName, props, "formMousePointerOffset");
+                return;
+            case "formscrollbars":
+            case "scrollbars":
+                RequireExistingMetadata(formName, propertyName, props, "formScrollBarsOffset");
+                return;
+            case "formcycle":
+            case "cycle":
+                RequireExistingMetadata(formName, propertyName, props, "formCycleOffset");
+                return;
+            case "formspecialeffect":
+            case "specialeffect":
+                RequireExistingMetadata(formName, propertyName, props, "formSpecialEffectOffset");
+                return;
+            case "formpicturealignment":
+            case "picturealignment":
+                RequireExistingMetadata(formName, propertyName, props, "formPictureAlignmentOffset");
+                return;
+            case "formpicturesizemode":
+            case "picturesizemode":
+                RequireExistingMetadata(formName, propertyName, props, "formPictureSizeModeOffset");
+                return;
+            case "formzoom":
+            case "zoom":
+                RequireExistingMetadata(formName, propertyName, props, "formZoomOffset");
+                return;
+            case "nextavailableid":
+                RequireExistingMetadata(formName, propertyName, props, "nextAvailableIdOffset");
+                return;
+            case "formgroupcount":
+                RequireExistingMetadata(formName, propertyName, props, "formGroupCountOffset");
+                return;
+            case "formdrawbuffer":
+                RequireExistingMetadata(formName, propertyName, props, "formDrawBufferOffset");
+                return;
+            case "widthpt":
+            case "displayedwidth":
+            case "displayedwidthpt":
+                RequireExistingMetadata(formName, propertyName, props, "displayedWidthOffset");
+                return;
+            case "heightpt":
+            case "displayedheight":
+            case "displayedheightpt":
+                RequireExistingMetadata(formName, propertyName, props, "displayedHeightOffset");
+                return;
+            case "logicalwidth":
+            case "logicalwidthpt":
+                RequireExistingMetadata(formName, propertyName, props, "logicalWidthOffset");
+                return;
+            case "logicalheight":
+            case "logicalheightpt":
+                RequireExistingMetadata(formName, propertyName, props, "logicalHeightOffset");
+                return;
+            case "scrollleft":
+            case "scrollleftpt":
+                RequireExistingMetadata(formName, propertyName, props, "scrollLeftOffset");
+                return;
+            case "scrolltop":
+            case "scrolltoppt":
+                RequireExistingMetadata(formName, propertyName, props, "scrollTopOffset");
+                return;
+        }
+    }
+
+    private static void RequireExistingMetadata(
+        string entityName,
+        string propertyName,
+        Dictionary<string, object?> properties,
+        params string[] metadataNames)
+    {
+        if (metadataNames.Any(properties.ContainsKey))
+        {
+            return;
+        }
+
+        throw new CliException(
+            $"Cannot patch '{entityName}.{propertyName}': the existing native record does not contain the optional field required to serialize this change.");
+    }
+
     private static ControlInfo ApplyToControl(ControlInfo control, Dictionary<string, JsonElement>? requested, LayoutPatch? layout, string? newName, string? patchDir = null)
     {
         if (control.Properties is null)
@@ -1340,9 +1987,19 @@ internal static class RebuildPatchApplier
         }
 
         var props = new Dictionary<string, object?>(control.Properties, StringComparer.OrdinalIgnoreCase);
-        foreach (var (propertyName, value) in requested ?? new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase))
+        foreach (var (propertyName, value) in OrderPropertyApplications(
+                     requested ?? new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase)))
         {
             ApplyPropertyToDictionary(control.Name, control.Type, props, propertyName, value, patchDir);
+        }
+
+        var propertyTarget = control with { Properties = props };
+        foreach (var propertyName in requested?.Keys ?? Enumerable.Empty<string>())
+        {
+            if (!ReconstructionIntentBuilder.EffectivePropertyEqual(control, propertyTarget, propertyName))
+            {
+                ValidateExistingControlMutation(control, propertyTarget, propertyName);
+            }
         }
 
         var left = control.Left;
@@ -1388,31 +2045,164 @@ internal static class RebuildPatchApplier
 
     private static void ApplyPropertyToDictionary(string controlName, string controlType, Dictionary<string, object?> props, string propertyName, JsonElement value, string? patchDir)
     {
+        if (!SupportsExportedObjectProperty(controlType, propertyName))
+        {
+            throw new CliException($"Property '{propertyName}' is not supported for {controlType} control '{controlName}'.");
+        }
+
         switch (propertyName.ToLowerInvariant())
         {
             case "caption":
+                var caption = RequireString(controlName, propertyName, value);
+                if (controlType.Equals("Frame", StringComparison.OrdinalIgnoreCase))
+                {
+                    props["formCaption"] = caption;
+                }
+                else if (controlType.Equals("Page", StringComparison.OrdinalIgnoreCase))
+                {
+                    props["tabCaption"] = caption;
+                }
+                else
+                {
+                    props["caption"] = caption;
+                }
+                break;
             case "groupname":
             case "fontname":
                 props[CanonicalPropertyName(propertyName)] = RequireString(controlName, propertyName, value);
                 break;
             case "value":
-                props["value"] = controlType.Equals("MultiPage", StringComparison.OrdinalIgnoreCase)
+            case "listindex":
+                props["value"] = controlType.Equals("MultiPage", StringComparison.OrdinalIgnoreCase) ||
+                                  controlType.Equals("TabStrip", StringComparison.OrdinalIgnoreCase) ||
+                                 controlType.Equals("ScrollBar", StringComparison.OrdinalIgnoreCase) ||
+                                 controlType.Equals("SpinButton", StringComparison.OrdinalIgnoreCase)
                     ? RequireInt32(controlName, propertyName, value)
                     : RequireString(controlName, propertyName, value);
+                if (controlType.Equals("ScrollBar", StringComparison.OrdinalIgnoreCase) ||
+                    controlType.Equals("SpinButton", StringComparison.OrdinalIgnoreCase))
+                {
+                    props["position"] = props["value"];
+                }
+                else if (controlType.Equals("TabStrip", StringComparison.OrdinalIgnoreCase))
+                {
+                    props["listIndex"] = props["value"];
+                    props.Remove("value");
+                }
+                else if (controlType.Equals("MultiPage", StringComparison.OrdinalIgnoreCase))
+                {
+                    props["listIndex"] = props["value"];
+                }
+                break;
+            case "style":
+            case "tabstyle":
+                var tabStyle = RequireInt32(controlName, propertyName, value);
+                if (tabStyle is < 0 or > 2)
+                {
+                    throw new CliException($"Property '{propertyName}' for '{controlName}' must be between 0 and 2.");
+                }
+                props["tabStyle"] = tabStyle;
+                if (controlType.Equals("MultiPage", StringComparison.OrdinalIgnoreCase))
+                {
+                    props["style"] = tabStyle;
+                }
+                else
+                {
+                    props.Remove("style");
+                }
+                break;
+            case "formspecialeffect":
+                props["formSpecialEffect"] = RequireInt32(controlName, propertyName, value);
                 break;
             case "passwordchar":
                 var passwordChar = RequireString(controlName, propertyName, value);
                 props["passwordChar"] = passwordChar.Length == 0 ? string.Empty : passwordChar[0].ToString();
                 break;
             case "tabcaptions":
+            case "tabtooltips":
             case "tabnames":
+            case "tabtags":
+            case "tabaccelerators":
             case "pagenames":
             case "pagecaptions":
                 props[CanonicalPropertyName(propertyName)] = RequireStringArray(controlName, propertyName, value);
                 break;
+            case "tabflags":
+                if (value.ValueKind != JsonValueKind.Array)
+                {
+                    throw new CliException($"Property '{propertyName}' for '{controlName}' must be an array.");
+                }
+                props["tabFlags"] = value.Clone();
+                break;
+            case "fonteffects":
+                var fontEffects = RequireUInt32Like(controlName, propertyName, value);
+                props["fontEffects"] = fontEffects;
+                props["fontItalic"] = (fontEffects & (1u << 1)) != 0;
+                props["fontUnderline"] = (fontEffects & (1u << 2)) != 0;
+                props["fontStrikethrough"] = (fontEffects & (1u << 3)) != 0;
+                break;
+            case "formbooleanproperties":
+                SetFormBooleanProperties(props, RequireUInt32Like(controlName, propertyName, value));
+                break;
+            case "formdrawbuffer":
+            case "drawbuffer":
+                props["formDrawBuffer"] = RequireUInt32Like(controlName, propertyName, value);
+                break;
             case "picture":
             case "mouseicon":
                 props[CanonicalPropertyName(propertyName)] = RequirePicture(controlName, propertyName, value, patchDir);
+                break;
+            case "picturesizemode":
+            case "picturealignment":
+                props[CanonicalPropertyName(propertyName)] = RequireUInt16(controlName, propertyName, value);
+                break;
+            case "proportionalthumb":
+                props[CanonicalPropertyName(propertyName)] = RequireBoolean(controlName, propertyName, value);
+                break;
+            case "picturetiling":
+            case "keepscrollbarsvisible":
+            case "righttoleft":
+                var formBooleanValue = RequireBoolean(controlName, propertyName, value);
+                if (IsContainerControlType(controlType))
+                {
+                    SetFormBooleanPropertyBit(
+                        props,
+                        propertyName,
+                        formBooleanValue,
+                        controlType.Equals("Frame", StringComparison.OrdinalIgnoreCase) ? 0x0000_8004u : 0x0000_C004u);
+                }
+                else
+                {
+                    props[CanonicalPropertyName(propertyName)] = formBooleanValue;
+                }
+                break;
+            case "min":
+            case "max":
+            case "position":
+            case "smallchange":
+            case "largechange":
+            case "orientation":
+            case "delay":
+            case "logicalwidth":
+            case "logicalheight":
+            case "scrollleft":
+            case "scrolltop":
+                props[CanonicalPropertyName(propertyName)] = RequireInt32(controlName, propertyName, value);
+                break;
+            case "logicalwidthpt":
+            case "logicalheightpt":
+            case "scrollleftpt":
+            case "scrolltoppt":
+                if (value.ValueKind != JsonValueKind.Number || !value.TryGetDouble(out var pointValue))
+                {
+                    throw new CliException($"Property '{propertyName}' for '{controlName}' must be a number.");
+                }
+                var pointPropertyName = CanonicalPropertyName(propertyName);
+                props[pointPropertyName] = pointValue;
+                if (ToRawPoints(pointValue) is int rawPointValue)
+                {
+                    props[pointPropertyName[..^2]] = rawPointValue;
+                }
                 break;
             case "controltiptext":
                 if (!props.ContainsKey("controlTipTextSpan"))
@@ -1436,12 +2226,12 @@ internal static class RebuildPatchApplier
             case "fontsize":
                 var size = RequireFontSize(controlName, value);
                 props["fontSize"] = size;
-                props["fontHeightRaw"] = (int)Math.Round(size * 20.0, MidpointRounding.AwayFromZero);
+                var rawSize = checked((uint)Math.Round(size * 20.0, MidpointRounding.AwayFromZero));
+                props["fontHeightRaw"] = unchecked((int)rawSize);
+                props["fontSizeRaw"] = rawSize;
                 break;
-            case "enabled":
             case "locked":
             case "wordwrap":
-            case "autosize":
             case "enterkeybehavior":
             case "tabkeybehavior":
             case "selectionmargin":
@@ -1454,6 +2244,32 @@ internal static class RebuildPatchApplier
             case "matchrequired":
             case "editable":
                 SetVariousPropertyBit(props, propertyName, RequireBoolean(controlName, propertyName, value));
+                break;
+            case "enabled":
+                var enabledValue = RequireBoolean(controlName, propertyName, value);
+                if (IsContainerControlType(controlType))
+                {
+                    SetFormBooleanPropertyBit(
+                        props,
+                        propertyName,
+                        enabledValue,
+                        controlType.Equals("Frame", StringComparison.OrdinalIgnoreCase) ? 0x0000_8004u : 0x0000_C004u);
+                }
+                else
+                {
+                    SetVariousPropertyBit(props, propertyName, enabledValue);
+                }
+                break;
+            case "autosize":
+                var autoSizeValue = RequireBoolean(controlName, propertyName, value);
+                if (controlType.Equals("Image", StringComparison.OrdinalIgnoreCase))
+                {
+                    props["autoSize"] = autoSizeValue;
+                }
+                else
+                {
+                    SetVariousPropertyBit(props, propertyName, autoSizeValue);
+                }
                 break;
             case "backstyle":
                 SetVariousPropertyBit(props, propertyName, RequireUInt16(controlName, propertyName, value) != 0);
@@ -1508,7 +2324,15 @@ internal static class RebuildPatchApplier
                 props["borderStyle"] = RequireUInt16(controlName, propertyName, value);
                 break;
             case "specialeffect":
-                props["specialEffect"] = RequireUInt16(controlName, propertyName, value);
+                var specialEffect = RequireUInt16(controlName, propertyName, value);
+                if (controlType.Equals("Frame", StringComparison.OrdinalIgnoreCase))
+                {
+                    props["formSpecialEffect"] = specialEffect;
+                }
+                else
+                {
+                    props["specialEffect"] = specialEffect;
+                }
                 break;
             case "textalign":
                 var textAlign = RequireTextAlign(controlName, propertyName, value);
@@ -1517,7 +2341,8 @@ internal static class RebuildPatchApplier
                 break;
             case "paragraphalign":
                 props["paragraphAlign"] = RequireUInt16(controlName, propertyName, value);
-                props["textAlign"] = TextPropsFactory.ParagraphAlignToTextAlign((int)props["paragraphAlign"]!);
+                props["textAlign"] = TextPropsFactory.TextAlignName(
+                    TextPropsFactory.ParagraphAlignToTextAlign((int)props["paragraphAlign"]!));
                 break;
             case "accelerator":
                 var accelerator = RequireString(controlName, propertyName, value);
@@ -1537,7 +2362,14 @@ internal static class RebuildPatchApplier
             case "visible":
             case "default":
             case "cancel":
+            case "siteautosize":
+            case "preserveheight":
+            case "fittoparent":
+            case "selectchild":
                 SetSiteFlag(props, propertyName, RequireBoolean(controlName, propertyName, value));
+                break;
+            case "sitebitflags":
+                SetSiteFlags(props, RequireUInt32Like(controlName, propertyName, value));
                 break;
             case "tag":
                 props["tag"] = RequireString(controlName, propertyName, value);
@@ -1552,7 +2384,9 @@ internal static class RebuildPatchApplier
                 props["groupId"] = RequireUInt16(controlName, propertyName, value);
                 break;
             case "fontbold":
-                props["fontBold"] = RequireBoolean(controlName, propertyName, value);
+                var bold = RequireBoolean(controlName, propertyName, value);
+                props["fontBold"] = bold;
+                props["fontWeight"] = bold ? 700 : 400;
                 break;
             case "fontitalic":
                 props["fontItalic"] = RequireBoolean(controlName, propertyName, value);
@@ -1570,24 +2404,29 @@ internal static class RebuildPatchApplier
                 props["fontPitchAndFamily"] = RequireUInt16(controlName, propertyName, value);
                 break;
             case "fontweight":
-                props["fontWeight"] = RequireUInt16(controlName, propertyName, value);
+                var fontWeight = RequireUInt16(controlName, propertyName, value);
+                props["fontWeight"] = fontWeight;
+                props["fontBold"] = fontWeight >= 700;
                 break;
             default:
-                break;
+                throw new CliException($"Property '{propertyName}' is not supported for control '{controlName}'.");
         }
     }
 
     private static void ApplyAddPropertyToDictionary(string controlName, string controlType, Dictionary<string, object?> props, string propertyName, JsonElement value, string? patchDir)
     {
+        if (!SupportsExportedObjectProperty(controlType, propertyName))
+        {
+            throw new CliException($"Property '{propertyName}' is not supported for {controlType} control '{controlName}'.");
+        }
+
         switch (propertyName.ToLowerInvariant())
         {
             case "orientation":
                 props["orientation"] = RequireInt32(controlName, propertyName, value);
                 break;
-            case "enabled":
             case "locked":
             case "wordwrap":
-            case "autosize":
             case "enterkeybehavior":
             case "tabkeybehavior":
             case "selectionmargin":
@@ -1599,15 +2438,46 @@ internal static class RebuildPatchApplier
             case "columnheads":
             case "matchrequired":
             case "editable":
+                SetVariousPropertyBit(props, propertyName, RequireBoolean(controlName, propertyName, value));
+                break;
+            case "enabled":
+                var enabled = RequireBoolean(controlName, propertyName, value);
+                if (IsContainerControlType(controlType))
+                {
+                    SetFormBooleanPropertyBit(
+                        props,
+                        propertyName,
+                        enabled,
+                        controlType.Equals("Frame", StringComparison.OrdinalIgnoreCase) ? 0x0000_8004u : 0x0000_C004u);
+                }
+                else
+                {
+                    SetVariousPropertyBit(props, propertyName, enabled);
+                }
+                break;
+            case "autosize":
+                var autoSize = RequireBoolean(controlName, propertyName, value);
+                if (controlType.Equals("Image", StringComparison.OrdinalIgnoreCase))
+                {
+                    props["autoSize"] = autoSize;
+                }
+                else
+                {
+                    SetVariousPropertyBit(props, propertyName, autoSize);
+                }
+                break;
             case "takefocusonclick":
             case "tabstop":
             case "visible":
             case "default":
             case "cancel":
+            case "siteautosize":
+            case "preserveheight":
+            case "fittoparent":
+            case "selectchild":
                 props[CanonicalPropertyName(propertyName)] = RequireBoolean(controlName, propertyName, value);
                 break;
             case "backstyle":
-            case "imemode":
             case "pictureposition":
             case "mousepointer":
             case "borderstyle":
@@ -1627,7 +2497,28 @@ internal static class RebuildPatchApplier
             case "multiselect":
             case "dragbehavior":
             case "enterfieldbehavior":
-                props[CanonicalPropertyName(propertyName)] = RequireInt32(controlName, propertyName, value);
+                var integerPropertyValue = RequireInt32(controlName, propertyName, value);
+                if (propertyName.Equals("specialEffect", StringComparison.OrdinalIgnoreCase) &&
+                    controlType.Equals("Frame", StringComparison.OrdinalIgnoreCase))
+                {
+                    props["formSpecialEffect"] = integerPropertyValue;
+                }
+                else
+                {
+                    props[CanonicalPropertyName(propertyName)] = integerPropertyValue;
+                }
+                if (propertyName.Equals("backStyle", StringComparison.OrdinalIgnoreCase))
+                {
+                    SetVariousPropertyBit(props, propertyName, MsFormsFactoryBinary.GetInt32(props, "backStyle") != 0);
+                }
+                else if (propertyName.Equals("dragBehavior", StringComparison.OrdinalIgnoreCase) ||
+                         propertyName.Equals("enterFieldBehavior", StringComparison.OrdinalIgnoreCase))
+                {
+                    SetVariousPropertyBit(props, propertyName, MsFormsFactoryBinary.GetInt32(props, CanonicalPropertyName(propertyName)) != 0);
+                }
+                break;
+            case "imemode":
+                SetImeMode(props, RequireUInt16(controlName, propertyName, value));
                 break;
             case "alignment":
                 var addAlignment = RequireInt32(controlName, propertyName, value);
@@ -1636,6 +2527,7 @@ internal static class RebuildPatchApplier
                     throw new CliException($"Property '{propertyName}' for '{controlName}' must be 0 or 1.");
                 }
                 props["alignment"] = addAlignment;
+                SetVariousPropertyBit(props, propertyName, addAlignment == 0);
                 break;
             case "textalign":
                 var addTextAlign = RequireTextAlign(controlName, propertyName, value);
@@ -1651,11 +2543,31 @@ internal static class RebuildPatchApplier
             case "controlsource":
                 props["controlSource"] = RequireString(controlName, propertyName, value);
                 break;
+            case "controltiptext":
+                props["controlTipText"] = RequireString(controlName, propertyName, value);
+                break;
             case "tabcaptions":
+            case "tabtooltips":
             case "tabnames":
+            case "tabtags":
+            case "tabaccelerators":
             case "pagenames":
             case "pagecaptions":
                 props[CanonicalPropertyName(propertyName)] = RequireStringArray(controlName, propertyName, value);
+                break;
+            case "tabflags":
+                if (value.ValueKind != JsonValueKind.Array)
+                {
+                    throw new CliException($"Property '{propertyName}' for '{controlName}' must be an array.");
+                }
+                props["tabFlags"] = value.Clone();
+                break;
+            case "formbooleanproperties":
+                SetFormBooleanProperties(props, RequireUInt32Like(controlName, propertyName, value));
+                break;
+            case "formdrawbuffer":
+            case "drawbuffer":
+                props["formDrawBuffer"] = RequireUInt32Like(controlName, propertyName, value);
                 break;
             default:
                 ApplyPropertyToDictionary(controlName, controlType, props, propertyName, value, patchDir);
@@ -1688,6 +2600,10 @@ internal static class RebuildPatchApplier
             "mousepointer" => "mousePointer",
             "borderstyle" => "borderStyle",
             "specialeffect" => "specialEffect",
+            "formspecialeffect" => "formSpecialEffect",
+            "listindex" => "listIndex",
+            "tabstyle" => "tabStyle",
+            "style" => "style",
             "maxlength" => "maxLength",
             "passwordchar" => "passwordChar",
             "scrollbars" => "scrollBars",
@@ -1717,14 +2633,23 @@ internal static class RebuildPatchApplier
             "takefocusonclick" => "takeFocusOnClick",
             "textalign" => "textAlign",
             "paragraphalign" => "paragraphAlign",
+            "sitebitflags" => "siteBitFlags",
             "tabstop" => "tabStop",
+            "siteautosize" => "siteAutoSize",
+            "preserveheight" => "preserveHeight",
+            "fittoparent" => "fitToParent",
+            "selectchild" => "selectChild",
             "controltiptext" => "controlTipText",
             "controlsource" => "controlSource",
             "backcolor" => "backColor",
             "forecolor" => "foreColor",
             "bordercolor" => "borderColor",
             "tabcaptions" => "tabCaptions",
+            "tabtooltips" => "tabTooltips",
             "tabnames" => "tabNames",
+            "tabtags" => "tabTags",
+            "tabaccelerators" => "tabAccelerators",
+            "tabflags" => "tabFlags",
             "pagenames" => "pageNames",
             "pagecaptions" => "pageCaptions",
             "tag" => "tag",
@@ -1738,6 +2663,10 @@ internal static class RebuildPatchApplier
             "fontcharset" => "fontCharSet",
             "fontpitchandfamily" => "fontPitchAndFamily",
             "fontweight" => "fontWeight",
+            "fonteffects" => "fontEffects",
+            "formbooleanproperties" => "formBooleanProperties",
+            "formdrawbuffer" => "formDrawBuffer",
+            "drawbuffer" => "DrawBuffer",
             _ => propertyName
         };
 
@@ -1794,14 +2723,23 @@ internal static class RebuildPatchApplier
     }
 
     private static uint DefaultVariousPropertyBits(Dictionary<string, object?> props) =>
-        TryGetString(props, "parser", out var parser) && parser.Equals("msOFormsLabel", StringComparison.OrdinalIgnoreCase)
+        (TryGetString(props, "parser", out var parser) && parser.Equals("msOFormsLabel", StringComparison.OrdinalIgnoreCase)) ||
+        IsControlType(props, "Label")
             ? 0x0080_0013u
+            : (TryGetString(props, "parser", out parser) &&
+               (parser.Equals("msOFormsImage", StringComparison.OrdinalIgnoreCase) ||
+                parser.Equals("msOFormsScrollBar", StringComparison.OrdinalIgnoreCase) ||
+                parser.Equals("msOFormsSpinButton", StringComparison.OrdinalIgnoreCase))) ||
+              IsControlType(props, "Image") || IsControlType(props, "ScrollBar") || IsControlType(props, "SpinButton")
+                 ? 0u
             : IsTextBox(props)
                 ? 0x2C80_481Bu
-            : IsControlType(props, "CheckBox")
+            : IsControlType(props, "CheckBox") || IsControlType(props, "ToggleButton")
                 ? 0x2C80_081Bu
             : IsControlType(props, "OptionButton")
                 ? 0x0080_001Bu
+            : IsControlType(props, "ComboBox")
+                ? 0x2C80_481Bu
             : 0x0000_001Bu;
 
     private static bool IsTextBox(Dictionary<string, object?> props) =>
@@ -1813,9 +2751,17 @@ internal static class RebuildPatchApplier
 
     private static void SetSiteFlag(Dictionary<string, object?> props, string propertyName, bool value)
     {
-        var flags = TryGetInt(props, "siteBitFlagsRaw", out var current)
-            ? unchecked((uint)current)
-            : 0x0000_0013;
+        var existingFlags = MsFormsFactoryBinary.GetUInt32(props, "siteBitFlagsRaw") ??
+                            MsFormsFactoryBinary.GetUInt32(props, "siteBitFlags");
+        if (existingFlags is null)
+        {
+            // Generated sites overlay named values on their type-specific factory
+            // defaults. Existing sites without a BitFlags field are rejected by the
+            // mutation capability check instead of inventing a raw word here.
+            props[CanonicalPropertyName(propertyName)] = value;
+            return;
+        }
+        var flags = existingFlags.Value;
 
         var bit = propertyName.ToLowerInvariant() switch
         {
@@ -1823,13 +2769,34 @@ internal static class RebuildPatchApplier
             "visible" => 1,
             "default" => 2,
             "cancel" => 3,
+            "siteautosize" => 5,
+            "preserveheight" => 8,
+            "fittoparent" => 9,
+            "selectchild" => 13,
             _ => throw new CliException($"Property '{propertyName}' is not a supported SITE_FLAG field.")
         };
 
         var mask = 1u << bit;
         flags = value ? flags | mask : flags & ~mask;
         props["siteBitFlagsRaw"] = unchecked((int)flags);
+        props["siteBitFlags"] = $"0x{flags:X8}";
         props[CanonicalPropertyName(propertyName)] = value;
+    }
+
+    private static void SetSiteFlags(Dictionary<string, object?> props, uint flags)
+    {
+        props["siteBitFlagsRaw"] = unchecked((int)flags);
+        props["siteBitFlags"] = $"0x{flags:X8}";
+        props["tabStop"] = (flags & (1u << 0)) != 0;
+        props["visible"] = (flags & (1u << 1)) != 0;
+        props["default"] = (flags & (1u << 2)) != 0;
+        props["cancel"] = (flags & (1u << 3)) != 0;
+        props["streamed"] = (flags & (1u << 4)) != 0;
+        props["siteAutoSize"] = (flags & (1u << 5)) != 0;
+        props["preserveHeight"] = (flags & (1u << 8)) != 0;
+        props["fitToParent"] = (flags & (1u << 9)) != 0;
+        props["selectChild"] = (flags & (1u << 13)) != 0;
+        props["promoteControls"] = (flags & (1u << 18)) != 0;
     }
 
     private static string RequireString(string controlName, string propertyName, JsonElement value)
@@ -1851,8 +2818,9 @@ internal static class RebuildPatchApplier
         if (s.StartsWith("base64:", StringComparison.OrdinalIgnoreCase))
         {
             imgBytes = Convert.FromBase64String(s["base64:".Length..]);
-            // If the base64 already has the 24-byte header (legacy export), keep it as is.
-            if (imgBytes.Length >= 24 && imgBytes[16] == 0x6C && imgBytes[17] == 0x74 && imgBytes[18] == 0x00 && imgBytes[19] == 0x00)
+            // Keep a complete native StdPicture stream intact. Partial or malformed
+            // lookalikes are payload bytes and receive a fresh native envelope.
+            if (MsFormsFactoryBinary.IsNativePictureStream(imgBytes))
             {
                 return s; // Already contains header.
             }
@@ -2105,11 +3073,15 @@ internal static class RebuildPatchApplier
         }
     }
 
-    private static void SetFormBooleanPropertyBit(Dictionary<string, object?> props, string propertyName, bool value)
+    private static void SetFormBooleanPropertyBit(
+        Dictionary<string, object?> props,
+        string propertyName,
+        bool value,
+        uint defaultValue = 0x0020_0001u)
     {
         var bits = TryGetString(props, "formBooleanProperties", out var hex) && hex.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
             ? Convert.ToUInt32(hex[2..], 16)
-            : 0x00200001u;
+            : defaultValue;
 
         var bit = propertyName.ToLowerInvariant() switch
         {
@@ -2125,6 +3097,15 @@ internal static class RebuildPatchApplier
         props["formBooleanProperties"] = $"0x{bits:X8}";
     }
 
+    private static void SetFormBooleanProperties(Dictionary<string, object?> props, uint bits)
+    {
+        props["formBooleanProperties"] = $"0x{bits:X8}";
+        props["enabled"] = (bits & 1u) != 0;
+        props["pictureTiling"] = (bits & (1u << 4)) != 0;
+        props["keepScrollBarsVisible"] = (bits & (1u << 21)) != 0;
+        props["rightToLeft"] = (bits & (1u << 22)) != 0;
+    }
+
     private static void ApplyFormPropertyToDictionary(string formKey, Dictionary<string, object?> props, string propertyName, JsonElement value, string? patchDir)
     {
         var normalizedPropertyName = propertyName.ToLowerInvariant() switch
@@ -2132,7 +3113,7 @@ internal static class RebuildPatchApplier
             "backcolor" => "formBackColor",
             "forecolor" => "formForeColor",
             "bordercolor" => "formBorderColor",
-            "caption" => "formCaption",
+            "caption" => "Caption",
             "borderstyle" => "formBorderStyle",
             "mousepointer" => "formMousePointer",
             "scrollbars" => "formScrollBars",
@@ -2153,6 +3134,8 @@ internal static class RebuildPatchApplier
             "clienttop" => "ClientTop",
             "startupposition" => "StartUpPosition",
             "showmodal" => "ShowModal",
+            "whatsthisbutton" => "WhatsThisButton",
+            "whatsthishelp" => "WhatsThisHelp",
             "tag" => "Tag",
             "drawbuffer" => "DrawBuffer",
             _ => propertyName
@@ -2168,18 +3151,26 @@ internal static class RebuildPatchApplier
                 props[CanonicalPropertyName(normalizedPropertyName) + "Raw"] = MsFormsFactoryBinary.ParseColor(colorStr, 0);
                 break;
             case "formcaption":
+            case "caption":
             case "tag":
                 props[CanonicalPropertyName(normalizedPropertyName)] = RequireString(formKey, normalizedPropertyName, value);
+                break;
+            case "formbooleanproperties":
+                SetFormBooleanProperties(props, RequireUInt32Like(formKey, normalizedPropertyName, value));
                 break;
             case "enabled":
             case "picturetiling":
             case "keepscrollbarsvisible":
             case "righttoleft":
             case "showmodal":
+            case "whatsthisbutton":
+            case "whatsthishelp":
                 var boolVal = RequireBoolean(formKey, normalizedPropertyName, value);
-                if (normalizedPropertyName.Equals("showmodal", StringComparison.OrdinalIgnoreCase))
+                if (normalizedPropertyName.Equals("showmodal", StringComparison.OrdinalIgnoreCase) ||
+                    normalizedPropertyName.Equals("whatsthisbutton", StringComparison.OrdinalIgnoreCase) ||
+                    normalizedPropertyName.Equals("whatsthishelp", StringComparison.OrdinalIgnoreCase))
                 {
-                    props["ShowModal"] = boolVal;
+                    props[CanonicalPropertyName(normalizedPropertyName)] = boolVal;
                 }
                 else
                 {
@@ -2199,6 +3190,9 @@ internal static class RebuildPatchApplier
             case "nextavailableid":
                 props[CanonicalPropertyName(normalizedPropertyName)] = RequireUInt32(formKey, normalizedPropertyName, value);
                 break;
+            case "formgroupcount":
+                props["formGroupCount"] = RequireNonNegativeInt32(formKey, normalizedPropertyName, value);
+                break;
             case "displayedwidth":
             case "displayedheight":
             case "logicalwidth":
@@ -2215,8 +3209,12 @@ internal static class RebuildPatchApplier
             case "scrolltoppt":
             case "left":
             case "top":
+            case "width":
+            case "height":
             case "clientleft":
             case "clienttop":
+            case "clientwidth":
+            case "clientheight":
                 if (value.ValueKind == JsonValueKind.Number && value.TryGetDouble(out var doubleVal))
                 {
                     var canonicalName = CanonicalPropertyName(normalizedPropertyName);
@@ -2237,13 +3235,94 @@ internal static class RebuildPatchApplier
                 }
                 break;
             case "startupposition":
-            case "drawbuffer":
                 props[CanonicalPropertyName(normalizedPropertyName)] = RequireInt32(formKey, normalizedPropertyName, value);
                 break;
-            default:
+            case "drawbuffer":
+                props["DrawBuffer"] = RequireInt32(formKey, normalizedPropertyName, value);
                 break;
+            case "formdrawbuffer":
+                props["formDrawBuffer"] = RequireUInt32Like(formKey, normalizedPropertyName, value);
+                break;
+            default:
+                throw new CliException($"Property '{propertyName}' is not supported for the root UserForm '{formKey}'.");
         }
     }
+
+    private static IEnumerable<KeyValuePair<string, JsonElement>> OrderPropertyApplications(
+        IEnumerable<KeyValuePair<string, JsonElement>> properties) =>
+        properties.OrderBy(pair => pair.Key.ToLowerInvariant() switch
+        {
+            "formbooleanproperties" or "fonteffects" or "fontweight" or "sitebitflags" => 0,
+            _ => 1
+        });
+
+    private static bool IsSupportedProperty(string propertyName, params IEnumerable<string>[] groups) =>
+        groups.Any(group => group.Contains(propertyName, StringComparer.OrdinalIgnoreCase));
+
+    internal static bool SupportsExportedObjectProperty(string controlType, string propertyName)
+    {
+        if (!ObjectPropertyNames.Contains(propertyName) && !FormSitePropertyNames.Contains(propertyName))
+        {
+            return false;
+        }
+
+        if (FormSitePropertyNames.Contains(propertyName))
+        {
+            return true;
+        }
+
+        var normalizedType = controlType.ToLowerInvariant();
+        var font = FontPropertyNames;
+        var morph = MorphVariousPropertyNames;
+        var container = ContainerPropertyNames;
+        var tabs = TabArrayPropertyNames;
+        return normalizedType switch
+        {
+            "commandbutton" => IsSupportedProperty(propertyName, font,
+                ["caption", "backColor", "foreColor", "enabled", "locked", "backStyle", "wordWrap", "autoSize",
+                 "imeMode", "picturePosition", "mousePointer", "accelerator", "takeFocusOnClick", "picture", "mouseIcon"]),
+            "label" => IsSupportedProperty(propertyName, font,
+                ["caption", "backColor", "foreColor", "borderColor", "enabled", "backStyle", "wordWrap", "autoSize",
+                 "imeMode", "picturePosition", "mousePointer", "accelerator", "borderStyle", "specialEffect", "picture", "mouseIcon"]),
+            "textbox" => IsSupportedProperty(propertyName, font, morph,
+                ["value", "backColor", "foreColor", "borderColor", "maxLength", "passwordChar", "scrollBars",
+                 "mousePointer", "borderStyle", "specialEffect", "picture", "mouseIcon"]),
+            "checkbox" or "optionbutton" or "togglebutton" => IsSupportedProperty(propertyName, font,
+                ["value", "caption", "groupName", "backColor", "foreColor", "enabled", "locked", "backStyle",
+                 "alignment", "wordWrap", "autoSize", "imeMode", "mousePointer", "multiSelect", "picturePosition",
+                 "specialEffect", "accelerator", "picture", "mouseIcon"]),
+            "combobox" => IsSupportedProperty(propertyName, font, morph,
+                ["value", "backColor", "foreColor", "borderColor", "borderStyle", "scrollBars", "displayStyle",
+                 "mousePointer", "listWidth", "boundColumn", "textColumn", "columnCount", "listRows", "matchEntry",
+                 "listStyle", "showDropButtonWhen", "dropButtonStyle", "maxLength", "specialEffect", "picture", "mouseIcon"]),
+            "listbox" => IsSupportedProperty(propertyName, font, morph,
+                ["value", "backColor", "foreColor", "borderColor", "borderStyle", "scrollBars", "displayStyle",
+                 "mousePointer", "listWidth", "boundColumn", "textColumn", "columnCount", "matchEntry", "listStyle",
+                 "multiSelect", "specialEffect", "picture", "mouseIcon"]),
+            "scrollbar" => IsSupportedProperty(propertyName, morph,
+                ["value", "backColor", "foreColor", "mousePointer", "min", "max", "position", "smallChange",
+                 "largeChange", "orientation", "delay", "proportionalThumb", "mouseIcon"]),
+            "spinbutton" => IsSupportedProperty(propertyName, morph,
+                ["value", "backColor", "foreColor", "mousePointer", "min", "max", "position", "smallChange",
+                 "orientation", "delay", "mouseIcon"]),
+            "image" => IsSupportedProperty(propertyName,
+                ["backColor", "borderColor", "enabled", "locked", "imeMode", "autoSize", "borderStyle", "mousePointer",
+                 "pictureSizeMode", "specialEffect", "picture", "pictureAlignment", "pictureTiling", "mouseIcon"]),
+            "tabstrip" => IsSupportedProperty(propertyName, font, tabs, ["caption", "value", "listIndex", "style", "tabStyle", "mouseIcon"]),
+            "frame" => IsSupportedProperty(propertyName, container, ["caption", "specialEffect", "formSpecialEffect"]),
+            "multipage" => IsSupportedProperty(propertyName, font, container, tabs, ["value", "listIndex", "style", "tabStyle"]),
+            "page" => IsSupportedProperty(propertyName, container, ["caption"]),
+            _ => false
+        };
+    }
+
+    internal static bool SupportsExportedRootProperty(string propertyName) =>
+        RootFormPropertyNames.Contains(propertyName);
+
+    private static bool IsContainerControlType(string controlType) =>
+        controlType.Equals("Frame", StringComparison.OrdinalIgnoreCase) ||
+        controlType.Equals("MultiPage", StringComparison.OrdinalIgnoreCase) ||
+        controlType.Equals("Page", StringComparison.OrdinalIgnoreCase);
 
     private static uint RequireUInt32(string controlName, string propertyName, JsonElement value)
     {
@@ -2253,5 +3332,30 @@ internal static class RebuildPatchApplier
         }
 
         return parsed;
+    }
+
+    private static uint RequireUInt32Like(string controlName, string propertyName, JsonElement value)
+    {
+        if (value.ValueKind == JsonValueKind.Number && value.TryGetUInt32(out var number))
+        {
+            return number;
+        }
+
+        if (value.ValueKind == JsonValueKind.String)
+        {
+            var text = value.GetString()?.Trim() ?? string.Empty;
+            if (text.StartsWith("0x", StringComparison.OrdinalIgnoreCase) &&
+                uint.TryParse(text[2..], NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var hex))
+            {
+                return hex;
+            }
+
+            if (uint.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed))
+            {
+                return parsed;
+            }
+        }
+
+        throw new CliException($"Property '{propertyName}' for '{controlName}' must be a 32-bit unsigned integer or 0x-prefixed hexadecimal string.");
     }
 }

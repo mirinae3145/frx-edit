@@ -65,7 +65,7 @@
                 continue;
             }
 
-            throw new CliException($"Layout target '{name}' does not exist. Layout keys: " + string.Join(",", patch.Layout.Keys));
+            throw new CliException($"Layout target '{name}' does not exist. Layout keys: " + string.Join(",", patch.Layout!.Keys));
         }
 
         foreach (var name in patch.Properties?.Keys ?? Enumerable.Empty<string>())

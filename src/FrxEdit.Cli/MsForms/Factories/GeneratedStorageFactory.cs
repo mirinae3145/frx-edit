@@ -14,8 +14,10 @@ internal static class GeneratedStorageFactory
         int width,
         int height,
         string? caption,
-        string storagePath)
+        string storagePath,
+        Dictionary<string, object?>? properties = null)
     {
+        var siteFlags = GeneratedControlFactory.BuildSiteFlags(0x0004_0023u, properties);
         var sitePayload = FormSiteFactory.BuildStorageOleSiteConcrete(
             name,
             siteId,
@@ -23,10 +25,22 @@ internal static class GeneratedStorageFactory
             0x0E,
             left,
             top,
-            0x0004_0023);
+            siteFlags,
+            properties);
 
-        var frameCaption = string.IsNullOrWhiteSpace(caption) ? name : caption!;
-        var fStream = BuildFrameFormStream(frameCaption, width, height, siteId);
+        var hasCaption = caption is not null ||
+                         properties?.ContainsKey("caption") == true ||
+                         properties?.ContainsKey("formCaption") == true;
+        var frameCaption = caption ?? (properties is null
+            ? null
+            : MsFormsFactoryBinary.GetString(properties, "formCaption") ??
+              MsFormsFactoryBinary.GetString(properties, "caption"));
+        var fStream = BuildFrameFormStream(frameCaption, hasCaption, width, height, properties);
+        var formPropMask = BinaryPrimitives.ReadUInt32LittleEndian(fStream.AsSpan(4, 4));
+        var formBooleanProperties = GetFormBooleanProperties(properties, 0x0000_8004u);
+        var formDrawBuffer = properties is null
+            ? null
+            : MsFormsFactoryBinary.GetUInt32(properties, "formDrawBuffer");
 
         var metadata = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
         {
@@ -35,8 +49,9 @@ internal static class GeneratedStorageFactory
             ["siteBitFlags"] = "0x00040023",
             ["siteAutoSize"] = true,
             ["formControlParser"] = "msOFormsFormControl",
-            ["formPropMask"] = "0x081A0C40",
-            ["formCaption"] = frameCaption,
+            ["formPropMask"] = $"0x{formPropMask:X8}",
+            ["formBooleanProperties"] = $"0x{formBooleanProperties:X8}",
+            ["formDrawBuffer"] = formDrawBuffer ?? 32_000u,
             ["sizeSource"] = "formControlDisplayedSize",
             ["displayedWidth"] = width,
             ["displayedHeight"] = height,
@@ -47,34 +62,70 @@ internal static class GeneratedStorageFactory
             ["generatedStorageO"] = Array.Empty<byte>(),
             ["generatedStorageCompObjKind"] = "Frame"
         };
+        if (hasCaption)
+        {
+            metadata["formCaption"] = frameCaption ?? string.Empty;
+        }
+        if (properties is not null &&
+            (MsFormsFactoryBinary.GetInt32(properties, "formSpecialEffect") ??
+             MsFormsFactoryBinary.GetInt32(properties, "specialEffect")) is int specialEffect)
+        {
+            metadata["formSpecialEffect"] = specialEffect;
+        }
+        GeneratedControlFactory.SynchronizeSiteFlagMetadata(metadata, siteFlags);
 
         return new GeneratedStorageControlBytes(sitePayload, metadata);
     }
 
-    private static byte[] BuildFrameFormStream(string caption, int width, int height, int siteId)
+    private static byte[] BuildFrameFormStream(
+        string? caption,
+        bool hasCaption,
+        int width,
+        int height,
+        Dictionary<string, object?>? properties)
     {
-        var captionBytes = Encoding.Latin1.GetBytes(caption);
+        var captionBytes = hasCaption ? Encoding.Latin1.GetBytes(caption ?? string.Empty) : Array.Empty<byte>();
+        var formBooleanProperties = GetFormBooleanProperties(properties, 0x0000_8004u);
+        var formDrawBuffer = properties is null
+            ? 32_000u
+            : MsFormsFactoryBinary.GetUInt32(properties, "formDrawBuffer") ?? 32_000u;
+        var specialEffect = properties is null
+            ? null
+            : MsFormsFactoryBinary.GetInt32(properties, "formSpecialEffect")
+                ?? MsFormsFactoryBinary.GetInt32(properties, "specialEffect");
+        uint propMask = 0x0810_0C40u; // BooleanProperties + sizes + font + draw buffer.
+        if (specialEffect is not null) propMask |= 1u << 17;
+        if (hasCaption) propMask |= 1u << 19;
 
         using var dataBlock = new MemoryStream();
-        MsFormsFactoryBinary.WriteUInt32(dataBlock, 0x0000_8004);
-        dataBlock.WriteByte(3);
+        MsFormsFactoryBinary.WriteUInt32(dataBlock, formBooleanProperties);
+        if (specialEffect is not null)
+        {
+            dataBlock.WriteByte(checked((byte)specialEffect.Value));
+        }
         MsFormsFactoryBinary.WritePadding(dataBlock, 4);
-        MsFormsFactoryBinary.WriteCount(dataBlock, captionBytes.Length);
+        if (hasCaption)
+        {
+            MsFormsFactoryBinary.WriteCount(dataBlock, captionBytes.Length, compressed: captionBytes.Length > 0);
+        }
         MsFormsFactoryBinary.WriteUInt16(dataBlock, 0xFFFF);
         MsFormsFactoryBinary.WritePadding(dataBlock, 4);
-        MsFormsFactoryBinary.WriteUInt32(dataBlock, 32_000);
+        MsFormsFactoryBinary.WriteUInt32(dataBlock, formDrawBuffer);
 
         using var extra = new MemoryStream();
         MsFormsFactoryBinary.WriteSize(extra, width, height);
         MsFormsFactoryBinary.WriteSize(extra, 0, 0);
-        extra.Write(captionBytes);
-        MsFormsFactoryBinary.WritePadding(extra, 4);
+        if (hasCaption)
+        {
+            extra.Write(captionBytes);
+            MsFormsFactoryBinary.WritePadding(extra, 4);
+        }
 
         using var formControl = new MemoryStream();
         formControl.WriteByte(0);
         formControl.WriteByte(4);
         MsFormsFactoryBinary.WriteUInt16(formControl, checked((ushort)(4 + dataBlock.Length + extra.Length)));
-        MsFormsFactoryBinary.WriteUInt32(formControl, 0x081A_0C40);
+        MsFormsFactoryBinary.WriteUInt32(formControl, propMask);
         formControl.Write(dataBlock.ToArray());
         formControl.Write(extra.ToArray());
         formControl.Write(BuildDefaultFontStreamData());
@@ -99,7 +150,8 @@ internal static class GeneratedStorageFactory
         int height,
         string storagePath,
         IReadOnlyList<GeneratedPageDefinition> pageDefinitions,
-        int selectedPageIndex)
+        int selectedPageIndex,
+        Dictionary<string, object?>? properties = null)
     {
         if (pageDefinitions.Count == 0)
         {
@@ -108,13 +160,16 @@ internal static class GeneratedStorageFactory
 
         var tabStripId = multiPageId + 1;
         var pageIds = Enumerable.Range(multiPageId + 2, pageDefinitions.Count).ToArray();
-        var sitePayload = FormSiteFactory.BuildStorageOleSiteConcrete(name, multiPageId, tabIndex, 0x39, left, top, 0x0004_0023);
+        var siteFlags = GeneratedControlFactory.BuildSiteFlags(0x0004_0023u, properties);
+        var sitePayload = FormSiteFactory.BuildStorageOleSiteConcrete(name, multiPageId, tabIndex, 0x39, left, top, siteFlags, properties);
         var tabStripPayload = BuildInternalTabStripPayload(
             pageDefinitions.Select(page => page.Name).ToArray(),
             pageDefinitions.Select(page => page.Caption).ToArray(),
             width,
             height,
-            selectedPageIndex);
+            selectedPageIndex,
+            properties,
+            out var tabStripMetadata);
         var pageSites = new List<byte[]>(pageDefinitions.Count);
         var pages = new List<GeneratedPageControlBytes>(pageDefinitions.Count);
         for (var i = 0; i < pageDefinitions.Count; i++)
@@ -130,13 +185,14 @@ internal static class GeneratedStorageFactory
                 0x07,
                 definition.Left,
                 definition.Top,
-                definition.SiteFlags);
+                definition.SiteFlags,
+                definition.Properties);
             pageSites.Add(pageSite);
             pages.Add(new GeneratedPageControlBytes(
                 pageName,
                 pageId,
                 pageStoragePath,
-                BuildPageFormStream(definition.Width, definition.Height, pageId),
+                BuildPageFormStream(definition.Width, definition.Height, pageId, definition.Properties),
                 Array.Empty<byte>(),
                 pageSite,
                 BuildDefaultPageProperties(),
@@ -147,7 +203,7 @@ internal static class GeneratedStorageFactory
 
         // The complete page plan is now known, so the MultiPage's mutually dependent
         // internal TabStrip, Page sites, and x metadata can be emitted consistently.
-        var fStream = BuildMultiPageFormStream(width, height, multiPageId, [internalTabSite, .. pageSites]);
+        var fStream = BuildMultiPageFormStream(width, height, multiPageId, [internalTabSite, .. pageSites], properties);
         var xStream = BuildMultiPageXStream(multiPageId, pageIds);
         var metadata = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
         {
@@ -156,7 +212,9 @@ internal static class GeneratedStorageFactory
             ["siteBitFlags"] = "0x00040023",
             ["siteAutoSize"] = true,
             ["formControlParser"] = "msOFormsFormControl",
-            ["formPropMask"] = "0x0C000C48",
+            ["formPropMask"] = "0x0C100C48",
+            ["formBooleanProperties"] = $"0x{GetFormBooleanProperties(properties, 0x0000_C004u):X8}",
+            ["formDrawBuffer"] = properties is null ? 32_000u : MsFormsFactoryBinary.GetUInt32(properties, "formDrawBuffer") ?? 32_000u,
             ["sizeSource"] = "formControlDisplayedSize",
             ["displayedWidth"] = width,
             ["displayedHeight"] = height,
@@ -171,6 +229,8 @@ internal static class GeneratedStorageFactory
             ["generatedStorageX"] = xStream,
             ["generatedStorageCompObjKind"] = "MultiPage"
         };
+        CopyTabMetadata(tabStripMetadata, metadata);
+        GeneratedControlFactory.SynchronizeSiteFlagMetadata(metadata, siteFlags);
 
         return new GeneratedMultiPageControlBytes(sitePayload, metadata, pages);
     }
@@ -182,7 +242,8 @@ internal static class GeneratedStorageFactory
         int width,
         int height,
         string storagePath,
-        uint siteFlags)
+        uint siteFlags,
+        Dictionary<string, object?>? properties = null)
     {
         var sitePayload = FormSiteFactory.BuildStorageOleSiteConcrete(
             name,
@@ -191,32 +252,49 @@ internal static class GeneratedStorageFactory
             0x07,
             0,
             0,
-            siteFlags);
+            siteFlags,
+            properties);
 
         return new GeneratedPageControlBytes(
             name,
             siteId,
             storagePath,
-            BuildPageFormStream(width, height, siteId),
+            BuildPageFormStream(width, height, siteId, properties),
             Array.Empty<byte>(),
             sitePayload,
             BuildDefaultPageProperties(),
             siteFlags);
     }
 
-    private static byte[] BuildMultiPageFormStream(int width, int height, int nextAvailableId, IReadOnlyList<byte[]> sites) =>
-        BuildContainerFormStream(width, height, nextAvailableId + 2 + sites.Count, sites, includePageTail: true);
+    private static byte[] BuildMultiPageFormStream(int width, int height, int nextAvailableId, IReadOnlyList<byte[]> sites, Dictionary<string, object?>? properties) =>
+        BuildContainerFormStream(width, height, nextAvailableId + 2 + sites.Count, sites, includePageTail: true, includeFont: true, properties);
 
-    private static byte[] BuildPageFormStream(int width, int height, int nextAvailableId) =>
-        BuildContainerFormStream(width, height, nextAvailableId + 2, [], includePageTail: false);
+    private static byte[] BuildPageFormStream(int width, int height, int nextAvailableId, Dictionary<string, object?>? properties) =>
+        BuildContainerFormStream(width, height, nextAvailableId + 2, [], includePageTail: false, includeFont: false, properties);
 
-    private static byte[] BuildContainerFormStream(int width, int height, int nextAvailableId, IReadOnlyList<byte[]> sites, bool includePageTail)
+    private static byte[] BuildContainerFormStream(
+        int width,
+        int height,
+        int nextAvailableId,
+        IReadOnlyList<byte[]> sites,
+        bool includePageTail,
+        bool includeFont,
+        Dictionary<string, object?>? properties)
     {
+        var formBooleanProperties = GetFormBooleanProperties(properties, 0x0000_C004u);
+        var formDrawBuffer = properties is null
+            ? 32_000u
+            : MsFormsFactoryBinary.GetUInt32(properties, "formDrawBuffer") ?? 32_000u;
         using var dataBlock = new MemoryStream();
         MsFormsFactoryBinary.WriteUInt32(dataBlock, checked((uint)nextAvailableId));
-        MsFormsFactoryBinary.WriteUInt32(dataBlock, 0x0000_C004);
+        MsFormsFactoryBinary.WriteUInt32(dataBlock, formBooleanProperties);
+        if (includeFont)
+        {
+            MsFormsFactoryBinary.WriteUInt16(dataBlock, 0xFFFF);
+            MsFormsFactoryBinary.WritePadding(dataBlock, 4);
+        }
         MsFormsFactoryBinary.WriteUInt32(dataBlock, 1);
-        MsFormsFactoryBinary.WriteUInt32(dataBlock, 32_000);
+        MsFormsFactoryBinary.WriteUInt32(dataBlock, formDrawBuffer);
 
         using var extra = new MemoryStream();
         MsFormsFactoryBinary.WriteSize(extra, width, height);
@@ -226,9 +304,14 @@ internal static class GeneratedStorageFactory
         formControl.WriteByte(0);
         formControl.WriteByte(4);
         MsFormsFactoryBinary.WriteUInt16(formControl, checked((ushort)(4 + dataBlock.Length + extra.Length)));
-        MsFormsFactoryBinary.WriteUInt32(formControl, 0x0C00_0C48);
+        var propMask = 0x0C00_0C48u | (includeFont ? 1u << 20 : 0u);
+        MsFormsFactoryBinary.WriteUInt32(formControl, propMask);
         formControl.Write(dataBlock.ToArray());
         formControl.Write(extra.ToArray());
+        if (includeFont)
+        {
+            formControl.Write(BuildDefaultFontStreamData());
+        }
 
         using var payload = new MemoryStream();
         if (sites.Count > 0)
@@ -319,8 +402,16 @@ internal static class GeneratedStorageFactory
         IReadOnlyList<string> pageCaptions,
         int width,
         int height,
-        int selectedPageIndex)
+        int selectedPageIndex,
+        Dictionary<string, object?>? properties,
+        out IReadOnlyDictionary<string, object?> metadata)
     {
+        var tabProperties = properties is null
+            ? new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+            : new Dictionary<string, object?>(properties, StringComparer.OrdinalIgnoreCase);
+        tabProperties.TryAdd("tabCaptions", pageCaptions.ToArray());
+        tabProperties.TryAdd("tabNames", pageNames.ToArray());
+        tabProperties["listIndex"] = selectedPageIndex;
         var request = new GeneratedControlRequest(
             "TabStrip",
             "__internal",
@@ -332,16 +423,57 @@ internal static class GeneratedStorageFactory
             height,
             null,
             null,
-            new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+            tabProperties);
+        var schema = new TabStripControlSchema();
+        var payload = schema.BuildObjectPayload(request);
+        metadata = schema.BuildMetadata(request, payload.Length);
+        return payload;
+    }
+
+    private static void CopyTabMetadata(
+        IReadOnlyDictionary<string, object?> tabStripMetadata,
+        Dictionary<string, object?> metadata)
+    {
+        foreach (var name in new[] { "tabCaptions", "tabTooltips", "tabNames", "tabTags", "tabAccelerators", "tabFlags", "tabStyle" })
+        {
+            if (tabStripMetadata.TryGetValue(name, out var value))
             {
-                ["tabCaptions"] = pageCaptions.ToArray(),
-                ["tabNames"] = pageNames.ToArray(),
-                ["listIndex"] = selectedPageIndex
-            });
-        return new TabStripControlSchema().BuildObjectPayload(request);
+                metadata[name] = value;
+            }
+        }
+        if (tabStripMetadata.TryGetValue("tabStyle", out var tabStyle))
+        {
+            metadata["style"] = tabStyle;
+        }
     }
 
     private static string FormatStorageId(int id) => id is >= 0 and < 10 ? $"0{id}" : id.ToString(System.Globalization.CultureInfo.InvariantCulture);
+
+    private static uint GetFormBooleanProperties(Dictionary<string, object?>? properties, uint defaultValue)
+    {
+        if (properties is null)
+        {
+            return defaultValue;
+        }
+
+        var bits = MsFormsFactoryBinary.GetUInt32(properties, "formBooleanProperties") ?? defaultValue;
+        SetBit(ref bits, 0, MsFormsFactoryBinary.GetBool(properties, "enabled"));
+        SetBit(ref bits, 4, MsFormsFactoryBinary.GetBool(properties, "pictureTiling"));
+        SetBit(ref bits, 21, MsFormsFactoryBinary.GetBool(properties, "keepScrollBarsVisible"));
+        SetBit(ref bits, 22, MsFormsFactoryBinary.GetBool(properties, "rightToLeft"));
+        return bits;
+    }
+
+    private static void SetBit(ref uint bits, int bit, bool? value)
+    {
+        if (value is null)
+        {
+            return;
+        }
+
+        var mask = 1u << bit;
+        bits = value.Value ? bits | mask : bits & ~mask;
+    }
 }
 
 internal sealed record GeneratedStorageControlBytes(
@@ -361,7 +493,8 @@ internal sealed record GeneratedPageDefinition(
     int Top,
     int Width,
     int Height,
-    uint SiteFlags);
+    uint SiteFlags,
+    Dictionary<string, object?>? Properties);
 
 internal sealed record GeneratedPageControlBytes(
     string Name,

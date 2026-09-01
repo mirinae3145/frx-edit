@@ -2,6 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://frxedit.local/schemas/frxedit-patch.schema.json",
   "title": "FrxEdit Patch",
+  "description": "Shared JSON value shapes for FrxEdit patches and templates. The CLI resolves each existing target's control type and performs the final unknown-property and type-compatibility checks.",
   "type": "object",
   "additionalProperties": false,
   "properties": {
@@ -20,6 +21,7 @@
     },
     "properties": {
       "type": "object",
+      "description": "Properties keyed by control name. Root aliases are the form name, UserForm, Form, or root. The CLI, rather than this shared envelope, enforces the target-specific property set.",
       "additionalProperties": {
         "$ref": "#/$defs/controlProperties"
       }
@@ -201,6 +203,7 @@
     },
     "controlProperties": {
       "type": "object",
+      "description": "Shared property-value envelope. A field being defined here does not make it valid for every control type; FrxEdit rejects known incompatible combinations after resolving the target type.",
       "additionalProperties": true,
       "properties": {
         "$action": {
@@ -231,15 +234,14 @@
         "caption": {
           "type": "string"
         },
-        "text": {
-          "type": "string"
+        "formCaption": {
+          "type": "string",
+          "description": "Binary container/FormControl caption. At the root this is distinct from the textual .frm caption property."
         },
         "value": {
           "type": [
             "string",
-            "number",
-            "boolean",
-            "null"
+            "integer"
           ]
         },
         "tag": {
@@ -254,8 +256,28 @@
         "rowSource": {
           "type": "string"
         },
+        "helpContextId": {
+          "type": "integer"
+        },
+        "groupId": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
         "groupName": {
           "type": "string"
+        },
+        "siteBitFlags": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/uint32"
+            },
+            {
+              "type": "string",
+              "pattern": "^0x[0-9A-Fa-f]{1,8}$"
+            }
+          ],
+          "description": "Lossless SITE_FLAG word. When absent, the MS-OFORMS file default is 0x00000033. The structural streamed and promoteControls bits must agree with the generated or existing storage graph."
         },
         "accelerator": {
           "type": "string",
@@ -274,6 +296,90 @@
         "heightPt": {
           "type": "number",
           "exclusiveMinimum": 0
+        },
+        "displayedWidth": {
+          "type": "integer"
+        },
+        "displayedHeight": {
+          "type": "integer"
+        },
+        "displayedWidthPt": {
+          "type": "number"
+        },
+        "displayedHeightPt": {
+          "type": "number"
+        },
+        "logicalWidth": {
+          "type": "integer"
+        },
+        "logicalHeight": {
+          "type": "integer"
+        },
+        "scrollLeft": {
+          "type": "integer"
+        },
+        "scrollTop": {
+          "type": "integer"
+        },
+        "clientLeft": {
+          "type": "number"
+        },
+        "clientTop": {
+          "type": "number"
+        },
+        "clientWidth": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "clientHeight": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "startUpPosition": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3
+        },
+        "showModal": {
+          "type": "boolean"
+        },
+        "nextAvailableId": {
+          "$ref": "#/$defs/uint32"
+        },
+        "formGroupCount": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2147483647,
+          "description": "Root FormControl group count. The MS-OFORMS file default is zero."
+        },
+        "cycle": {
+          "type": "integer"
+        },
+        "zoom": {
+          "$ref": "#/$defs/uint32"
+        },
+        "drawBuffer": {
+          "$ref": "#/$defs/uint32"
+        },
+        "formDrawBuffer": {
+          "$ref": "#/$defs/uint32"
+        },
+        "formBooleanProperties": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/uint32"
+            },
+            {
+              "type": "string",
+              "pattern": "^0x[0-9A-Fa-f]{1,8}$"
+            }
+          ]
+        },
+        "whatsThisButton": {
+          "type": "boolean"
+        },
+        "whatsThisHelp": {
+          "type": "boolean"
         },
         "backColor": {
           "$ref": "#/$defs/color"
@@ -295,6 +401,22 @@
         },
         "tabStop": {
           "type": "boolean"
+        },
+        "siteAutoSize": {
+          "type": "boolean",
+          "description": "Editable SITE_FLAG fAutoSize projection."
+        },
+        "preserveHeight": {
+          "type": "boolean",
+          "description": "Editable SITE_FLAG fPreserveHeight projection."
+        },
+        "fitToParent": {
+          "type": "boolean",
+          "description": "Editable SITE_FLAG fFitToParent projection."
+        },
+        "selectChild": {
+          "type": "boolean",
+          "description": "Editable SITE_FLAG fSelectChild projection."
         },
         "wordWrap": {
           "type": "boolean"
@@ -332,14 +454,38 @@
           "maximum": 65535
         },
         "fontName": {
-          "type": "string"
+          "type": "string",
+          "description": "Font-bearing controls only. Root UserForm font editing and generation are not currently supported."
         },
         "fontSize": {
           "type": "number",
           "exclusiveMinimum": 0
         },
         "fontWeight": {
-          "type": "integer"
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "fontEffects": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/uint32"
+            },
+            {
+              "type": "string",
+              "pattern": "^0x[0-9A-Fa-f]{1,8}$"
+            }
+          ]
+        },
+        "fontCharSet": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "fontPitchAndFamily": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
         },
         "fontBold": {
           "type": "boolean"
@@ -373,6 +519,11 @@
             }
           ]
         },
+        "paragraphAlign": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3
+        },
         "alignment": {
           "type": "integer",
           "enum": [
@@ -404,6 +555,17 @@
             6
           ]
         },
+        "formSpecialEffect": {
+          "type": "integer",
+          "description": "Compatibility alias for Frame specialEffect.",
+          "enum": [
+            0,
+            1,
+            2,
+            3,
+            6
+          ]
+        },
         "picturePosition": {
           "type": "integer",
           "minimum": 0,
@@ -412,7 +574,8 @@
         "pictureAlignment": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 4
+          "maximum": 4,
+          "description": "Image controls, or the root FormControl setting. This does not add a root picture payload."
         },
         "pictureSizeMode": {
           "type": "integer",
@@ -420,12 +583,41 @@
             0,
             1,
             3
-          ]
+          ],
+          "description": "Image controls, or the root FormControl setting. This does not add a root picture payload."
+        },
+        "picture": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/assetReference"
+            }
+          ],
+          "description": "Supported for CommandButton, Label, TextBox, ComboBox, ListBox, CheckBox, OptionButton, ToggleButton, and Image; not for the root or container controls."
+        },
+        "mouseIcon": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/assetReference"
+            }
+          ],
+          "description": "Supported for picture-bearing controls plus ScrollBar, SpinButton, and TabStrip; not for the root or container controls."
+        },
+        "pictureTiling": {
+          "type": "boolean",
+          "description": "Image, Frame, MultiPage, Page, or the root FormControl setting."
         },
         "scrollBars": {
           "type": "integer",
           "minimum": 0,
           "maximum": 3
+        },
+        "keepScrollBarsVisible": {
+          "type": "boolean",
+          "description": "Frame, MultiPage, Page, or the root FormControl setting."
+        },
+        "rightToLeft": {
+          "type": "boolean",
+          "description": "Frame, MultiPage, Page, or the root FormControl setting."
         },
         "mousePointer": {
           "type": "integer"
@@ -455,7 +647,7 @@
         "listWidth": {
           "type": "number"
         },
-        "style": {
+        "displayStyle": {
           "type": "integer"
         },
         "matchEntry": {
@@ -473,17 +665,36 @@
           "minimum": 0,
           "maximum": 2
         },
-        "min": {
+        "dropButtonStyle": {
           "type": "integer"
+        },
+        "listStyle": {
+          "type": "integer"
+        },
+        "columnHeads": {
+          "type": "boolean"
+        },
+        "matchRequired": {
+          "type": "boolean"
+        },
+        "editable": {
+          "type": "boolean"
+        },
+        "min": {
+          "type": "integer",
+          "description": "ScrollBar and SpinButton only."
         },
         "max": {
-          "type": "integer"
+          "type": "integer",
+          "description": "ScrollBar and SpinButton only."
         },
         "smallChange": {
-          "type": "integer"
+          "type": "integer",
+          "description": "ScrollBar and SpinButton only."
         },
         "largeChange": {
-          "type": "integer"
+          "type": "integer",
+          "description": "ScrollBar only."
         },
         "orientation": {
           "type": "integer",
@@ -491,27 +702,148 @@
             -1,
             0,
             1
-          ]
+          ],
+          "description": "ScrollBar and SpinButton only."
         },
         "delay": {
           "type": "integer",
-          "minimum": 0
+          "minimum": 0,
+          "description": "ScrollBar and SpinButton only."
         },
         "proportionalThumb": {
+          "type": "boolean",
+          "description": "ScrollBar only."
+        },
+        "position": {
+          "type": "integer",
+          "description": "ScrollBar and SpinButton position; value is an accepted alias."
+        },
+        "integralHeight": {
           "type": "boolean"
+        },
+        "enterKeyBehavior": {
+          "type": "boolean"
+        },
+        "tabKeyBehavior": {
+          "type": "boolean"
+        },
+        "enterFieldBehavior": {
+          "type": "integer"
+        },
+        "dragBehavior": {
+          "type": "boolean"
+        },
+        "imeMode": {
+          "type": "integer"
+        },
+        "logicalWidthPt": {
+          "type": "number"
+        },
+        "logicalHeightPt": {
+          "type": "number"
+        },
+        "scrollLeftPt": {
+          "type": "number"
+        },
+        "scrollTopPt": {
+          "type": "number"
         },
         "pageNames": {
           "type": "array",
+          "description": "MultiPage and TabStrip compatibility alias.",
           "items": {
             "type": "string"
           }
         },
         "pageCaptions": {
           "type": "array",
+          "description": "MultiPage and TabStrip compatibility alias.",
           "items": {
             "type": "string"
           }
+        },
+        "tabNames": {
+          "$ref": "#/$defs/stringArray",
+          "description": "MultiPage and TabStrip only."
+        },
+        "tabCaptions": {
+          "$ref": "#/$defs/stringArray",
+          "description": "MultiPage and TabStrip only."
+        },
+        "tabTags": {
+          "$ref": "#/$defs/stringArray",
+          "description": "MultiPage and TabStrip only."
+        },
+        "tabTooltips": {
+          "$ref": "#/$defs/stringArray",
+          "description": "MultiPage and TabStrip only."
+        },
+        "tabAccelerators": {
+          "$ref": "#/$defs/stringArray",
+          "description": "MultiPage and TabStrip only."
+        },
+        "tabFlags": {
+          "type": "array",
+          "description": "MultiPage and TabStrip only. Raw unknown flag bits are retained alongside the visible/enabled projection.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "raw",
+              "visible",
+              "enabled"
+            ],
+            "properties": {
+              "raw": {
+                "$ref": "#/$defs/uint32"
+              },
+              "visible": {
+                "type": "boolean"
+              },
+              "enabled": {
+                "type": "boolean"
+              }
+            }
+          }
+        },
+        "style": {
+          "type": "integer",
+          "description": "Canonical MultiPage and TabStrip tab style.",
+          "enum": [
+            0,
+            1,
+            2
+          ]
+        },
+        "tabStyle": {
+          "type": "integer",
+          "description": "Compatibility alias for MultiPage and TabStrip style.",
+          "enum": [
+            0,
+            1,
+            2
+          ]
+        },
+        "listIndex": {
+          "type": "integer",
+          "description": "Compatibility alias for the canonical MultiPage and TabStrip value."
         }
+      }
+    },
+    "uint32": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295
+    },
+    "assetReference": {
+      "type": "string",
+      "pattern": "^(base64:|file://).+$",
+      "description": "Embedded native stream data or a URI. Relative file:// paths resolve against the patch/template document directory, not the process working directory."
+    },
+    "stringArray": {
+      "type": "array",
+      "items": {
+        "type": "string"
       }
     },
     "color": {
