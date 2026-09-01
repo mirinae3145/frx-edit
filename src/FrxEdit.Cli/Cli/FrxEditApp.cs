@@ -99,7 +99,7 @@ internal sealed class FrxEditApp(TextWriter stdout, TextWriter stderr)
             
             if (outPath is not null)
             {
-                var vbaOut = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(outPath))!, project.FormName + ".vba");
+                var vbaOut = Path.ChangeExtension(Path.GetFullPath(outPath), ".vba");
                 File.WriteAllText(vbaOut, project.VbaCode.TrimStart('\r', '\n'), project.Encoding);
             }
             
