@@ -8,7 +8,46 @@ on:
     branches: [ "main" ]
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Checkout IguanaTex canonical corpus
+      uses: actions/checkout@v4
+      with:
+        repository: lee-lab-skku/IguanaTex
+        ref: 7a2b8de
+        path: IguanaTex
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: 8.0.x
+
+    - name: Restore dependencies
+      run: dotnet restore src/FrxEdit.Cli/FrxEdit.Cli.csproj
+
+    - name: Test canonical round-trip fidelity
+      shell: pwsh
+      run: ./scripts/test-canonical-roundtrip.ps1 -Configuration Release -IguanaTexRepo ./IguanaTex -ArtifactsRoot ./.build
+
+    - name: Test generated container reconstruction
+      shell: pwsh
+      run: ./scripts/test-generated-container-pipeline.ps1 -Configuration Release -SkipBuild -ArtifactsRoot ./.build
+
+    - name: Upload fidelity diagnostics
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: canonical-roundtrip-diagnostics
+        path: ./.build/**
+        if-no-files-found: ignore
+        include-hidden-files: true
+
   build:
+    needs: test
     runs-on: ubuntu-latest
     strategy:
       matrix:

@@ -1,51 +1,88 @@
-# FrxEdit Architecture & Binary Format
+# FrxEdit Architecture and Binary Format
 
-This document provides a technical overview of how FrxEdit inspects and reconstructs supported Microsoft Forms (MS-OFORMS) binary streams and text layouts.
+This document describes how FrxEdit inspects and reconstructs its supported subset of Microsoft Forms. The implementation follows the structures documented by MS-OFORMS while retaining unmodified native bytes whenever no semantic change is requested.
 
-## The Dual-File Structure
+## The dual-file form model
 
-A standard VBA form consists of two synchronized files:
+A VBA form is represented by two coordinated files:
 
-1.  **`.frm` (Text Layout)**: A legacy VB6-style plain text file. It stores the macro code, high-level control declarations (e.g., `Begin MSForms.CommandButton`), and absolute positioning in **Points** (pt).
-1.  **`.frx` (Binary Storage)**: An **OLE Compound File Binary Format (CFB)**. It acts as a miniature file system inside a single file, storing rich streams of binary data that plain text cannot represent natively, such as:
-    *   Embedded Images (`.frx` offsets).
-    *   OLE control metadata (`f`, `o`, `x` streams).
-    *   Complex Unicode strings that cannot be saved in the `.frm` ANSI encoding.
-    *   Typographic arrays (StdFont variants).
+1. **`.frm` text** contains the form and control declarations, VBA code, textual root properties, and `OleObjectBlob` reference.
+1. **`.frx` binary storage** is an OLE Compound File Binary Format container holding FormControl data, FormSiteData, object payloads, pictures, fonts, and nested container storages.
 
-## OLE Streams (`f`, `o`, `x`)
+The textual root properties and binary FormControl properties are related but are not interchangeable. In particular, `.frm` `ClientWidth` and `ClientHeight` are preserved independently from the binary displayed and logical dimensions. A no-op binary reconstruction must not rewrite the textual client dimensions or caption.
 
-Within the `.frx` CFB file, controls are represented by sites in the root or an owned container storage. The following stream kinds encode the graph; not every control owns every stream:
+Binary root `formGroupCount` is a Writer-backed semantic value; its documented file default is zero. `formShapeCookie` is retained and exposed as native structural evidence, but is not an editable or hard canonical property. The automated Reader can observe its persisted integer but cannot validate the corresponding Office/VBE compiled-type state, so cookie changes remain separately reported until native-host validation is performed.
 
-*   **`f` (Form Data)**: A form or container stream containing its intrinsic properties and the FormSiteData records for its immediate children.
-*   **`o` (Object Data)**: A form or container stream containing the concatenated payloads of object-bearing immediate children, such as BackColor, Caption, Enabled, and MousePointer data.
-*   **`x` (Extended Data)**: An optional stream used by structures such as MultiPage to record Page relationships and IDs.
+## MSForms stream graph
 
-## The FrxEdit Rebuild Pipeline
+Controls are represented by sites in the root storage or in a storage owned by a container:
 
-FrxEdit reconstructs supported form semantics through a strict pipeline:
+- **`f` (form data)** contains a FormControl or container record followed by the ordered FormSiteData records for its immediate children.
+- **`o` (object data)** contains the concatenated payloads of object-bearing immediate children. Its payload order must agree with the corresponding Sites order.
+- **`x` (extended data)** records relationships such as MultiPage Page IDs.
 
-1.  **JSON Patch DOM (`PatchDocument`)**: When a user or an AI Agent runs `frxedit build`, FrxEdit reads the target `patch.json`. This JSON document represents the state of the UI (modifications, creations, deletions).
-1.  **Schema Validation**: The patch is strictly validated against `MsFormsControlSchemaCatalog`. This prevents the injection of illegal types (e.g., placing a string in a boolean property), which would cause a fatal crash in the host VBA environment (Excel/Corel).
-1.  **Round-Trip Parsing**:
-    *   For an existing form, FrxEdit opens the original `.frx` and reads the CFB streams using its own **custom, zero-dependency CFB parser** (`CompoundStorageInspector`). A create operation starts from a generated root form instead.
-    *   Existing `f`, `o`, and `x` streams are parsed into in-memory .NET objects (`LocatedValue`).
-1.  **Graph Planning and Morphing**:
-    *   Structural additions are resolved as a complete parent graph before generated container bytes become final. Parent dependencies, Page ownership, tab order, IDs, and storage paths therefore do not depend on JSON `add` ordering.
-    *   Explicit Page children define a generated MultiPage's effective Page set. The two-Page fallback is used only when the completed graph requests no explicit Pages.
-    *   Property changes morph parsed objects in memory, while structural additions use generated site, object, and container records.
-    *   The pipeline updates twips, hex colors, font flags, and byte alignments as required by the supported schemas.
-1.  **Stream Planning**:
-    *   Every generated Frame, Page, and MultiPage storage is materialized into the working storage plan before object and FormSiteData rewriting.
-    *   Children of generated containers participate in the same `f` and `o` rewrite pass as children of pre-existing containers. MultiPage `f`, internal TabStrip `o`, and Page-ID `x` data are derived from the same completed Page graph.
-1.  **CFB Serialization**:
-    *   The morphed objects are serialized back into byte streams.
-    *   A completely new `.frx` CFB container is generated to avoid OLE fragmentation (a common issue when manipulating `.frx` files directly).
-1.  **Text Layout Generation**:
-    *   Finally, FrxEdit generates the new `.frm` text layout and recalculates `pt` (points) dimensions from the `twips` stored in the binary.
+The ordered Sites sequence is native structural state. It is kept internally consistent with `o`, but it is not inferred to be tab order or global z-order. `tabIndex` is compared separately, and Page order comes from explicit MultiPage Page/TabStrip semantics. The flattened order in an inspection JSON array is not a semantic ordering contract.
 
-The generated-container invariant is covered by `scripts/test-generated-container-pipeline.ps1`. The test recreates an explicit three-Page graph in parent-first and child-first order, validates nested Page/Frame reachability and exact stream consumption, exercises Page clones and a count-neutral Page replacement in an existing MultiPage, and checks selection-aware fallback Pages.
+Each site's optional `BitFlags` word has the effective file default `0x00000033`. FrxEdit exposes the behavioral bits as `siteAutoSize`, `preserveHeight`, `fitToParent`, and `selectChild`, and preserves the raw `siteBitFlags` word while overlaying named edits. The `streamed` bit describes object-stream versus owned-storage persistence, while `promoteControls` is required for Frame, MultiPage, and Page; both are derived from the planned graph and are not independently editable.
 
-## AI Design Contracts
+## Reconstruction pipeline
 
-By abstracting the complex CFB binary logic into a clean JSON interface, FrxEdit allows LLMs to design UIs. The AI does not need to know about `twips`, OLE headers, or `Site` allocations; it only outputs JSON according to our schema, and FrxEdit handles the binary compilation.
+FrxEdit uses the following stages:
+
+1. **Parse and validate.** The Reader discovers the CFB graph and parses known `f`, `o`, and `x` records in strict or tolerant mode. Strict mode requires exact stream consumption and rejects parser warnings.
+1. **Normalize patch intent.** Patch and template JSON are validated and normalized. The reconstruction plan records object-property, site-property, geometry, structure, binary-root, and textual FRM-root changes separately.
+1. **Preserve or patch existing state.** Unchanged site records and object-stream slices are copied from the source. Modified objects are rebuilt from their parsed native state plus the requested delta, preserving omitted values, unsigned bitfields, and unknown bits rather than replacing them with generated defaults.
+1. **Plan the control graph.** Adds, removes, moves, renames, and container ownership are resolved before bytes are emitted. Parent dependencies do not depend on the incoming JSON `add` order, while source sibling order within a parent is retained.
+1. **Generate new controls and containers.** New controls use type-specific schemas. Frames, Pages, and MultiPages receive owned storage, and their child `f`/`o` streams participate in the same graph plan as existing containers. Explicit Pages suppress the two-Page fallback.
+1. **Serialize coordinated streams.** FormSiteData, object payload order, container streams, MultiPage TabStrip data, and Page-ID `x` streams are emitted from the same completed plan. Picture lengths include their property masks and native picture envelopes.
+1. **Build a new CFB container.** FrxEdit writes a fresh compound container from the planned streams. FRX byte equality is intentionally not required; parsed semantics and native structural invariants are the acceptance criteria.
+1. **Update `.frm` text.** Control declarations and explicitly requested textual properties are synchronized. Unchanged root text and VBA code remain source-derived.
+1. **Strictly reread.** The rebuilt pair is inspected again so reports and tests compare observable output rather than assuming that successful serialization proves fidelity.
+
+## JSON and asset boundaries
+
+Patch/template JSON is the public edit contract. Existing property names remain backward compatible; newly round-trippable values such as `fontEffects`, `paragraphAlign`, `controlTipText`, Image `borderStyle`, FRM client dimensions, and MultiPage tab arrays use their existing names.
+
+The property object in the published JSON Schema is a shared value-shape envelope because an existing-control patch does not have to repeat the target control's type. The CLI resolves that type from the source form and is the final contract validator: unknown properties and the implemented type-incompatible combinations are rejected with an error. Examples include Image-only `pictureSizeMode` and `pictureAlignment`, ScrollBar-only `largeChange` and `proportionalThumb`, and tab-array fields limited to MultiPage and TabStrip.
+
+Picture and mouse-icon strings may be embedded `base64:` values or `file://` references. A relative file URI is resolved against the directory of the JSON document that contains it for positional patches, `--patch`, `create`, `build`, and `watch`. The current working directory is not part of this contract.
+
+Root FormControl parsing is broader than root generation. Existing root picture, mouse-icon, and font payloads remain source-derived when unchanged, but the current root patch/template Writer does not accept `formPicture`, `formMouseIcon`, or root font fields. Picture and mouse-icon editing is available only for the control types listed in the supported-controls document.
+
+Property absence is meaningful. The Writer only treats absence as equivalent to an explicit value where MS-OFORMS establishes that file default. Other presence differences are preserved or reported rather than broadly normalized.
+
+## Fidelity diagnostics
+
+Reader provenance audits trace parser observations (`P`) through the raw inspection model (`R`) to exported JSON (`J`). Writer audits trace JSON (`J`) through normalization and target planning to emitted binary evidence and strict reread.
+
+`scripts/compare-canonical-form.ps1` compares two strict raw inspections. Its hard comparison includes:
+
+- control identity, type, parent, and point geometry;
+- editable control and root properties;
+- explicit `tabIndex` and MultiPage Page/tab order;
+- decoded picture and mouse-icon payload hashes;
+- strict parser warning, error, and heuristic counts.
+
+Documented default-vs-omitted values are listed separately as normalizations. Native structure is also non-gating and reports the per-storage ordered Sites sequence, object-bearing controls ordered by their object-payload offsets, and `formShapeCookie`. This exposes whether each `o` sequence still agrees with its Sites plan without treating either sequence as tab order, while keeping cookie normalization visible. Global inspection-array position is ignored.
+
+## Regression suites
+
+- `scripts/test-canonical-roundtrip.ps1` performs no-op rebuild, both exported-patch command forms, bounded watch regeneration, and template recreation on copies of the comprehensive local fixture. Watch runs from a directory unrelated to the exported patch, then requires strict reread and canonical comparison of the regenerated output. Passing `-IguanaTexRepo` adds the nine canonical IguanaTex forms, applies the exact LatexForm graph/MultiPage gates to every reconstruction path, and verifies source hashes before and after the run. `-SkipWatch` is available only for focused diagnosis; watch is part of the default acceptance suite.
+- `scripts/test-generated-container-pipeline.ps1` validates parent-first and child-first graph planning, nested Page/Frame reachability, exact MultiPage streams, Page cloning and replacement, and fallback Pages.
+
+By default both suites retain each run in a fresh GUID-scoped directory under `.build`; `-ArtifactsRoot` selects another retained-artifact root. The legacy `-KeepArtifacts` switch remains accepted for invocation compatibility but is no longer required. The canonical suite retains command logs, generated pairs, raw inspections, comparison reports, watch state, and source-hash manifests on success or failure.
+
+## MS-OFORMS references
+
+The reconstruction and comparison policies above are based on Microsoft's definitions of:
+
+- [FormSiteData and its ordered Sites sequence](https://learn.microsoft.com/en-us/openspecs/office_file_formats/ms-oforms/f65e0b17-6383-4570-b030-7b868f2c07d5);
+- [object-stream control ordering](https://learn.microsoft.com/en-us/openspecs/office_file_formats/ms-oforms/15778df8-8a8e-45dc-933b-f914f4e011cf);
+- [OleSiteConcreteControl optional/default persistence](https://learn.microsoft.com/en-us/openspecs/office_file_formats/ms-oforms/21354226-e08d-44d2-a06f-c9e751b56188), [SitePropMask](https://learn.microsoft.com/en-us/openspecs/office_file_formats/ms-oforms/896d3774-dd6e-46b5-bfa7-6651aba111a8), and [SITE_FLAG](https://learn.microsoft.com/en-us/openspecs/office_file_formats/ms-oforms/ed58f23c-ec1f-43f8-a593-df2626191d27);
+- [FormDataBlock](https://learn.microsoft.com/en-us/openspecs/office_file_formats/ms-oforms/096870e8-5263-44ed-885b-379d23471c4f) and the zero-default [GroupCount](https://learn.microsoft.com/en-us/openspecs/office_file_formats/ms-oforms/f6e7d082-f4b8-4727-8f02-4a43dad6771e);
+- [Image `cbImage`](https://learn.microsoft.com/en-us/openspecs/office_file_formats/ms-oforms/aa5531bb-1ab3-430e-8091-f03df8d22891); and
+- [VariousPropertyBits defaults](https://learn.microsoft.com/en-us/openspecs/office_file_formats/ms-oforms/7a72ac4a-39d9-4e2b-829e-19e3e9a1f60d).
+
+## Native Office boundary
+
+Codec success demonstrates automated semantic reconstruction for the tested corpus. It does not establish PowerPoint or VBE import, compilation, visual rendering, focus behavior, event execution, runtime interaction, or native save/reopen compatibility. Those checks require a separate Windows Office validation session.

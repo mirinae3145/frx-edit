@@ -1,0 +1,190 @@
+{
+  "properties": {
+    "GraphForm": {},
+    "Tabs": {
+      "type": "MultiPage",
+      "leftPt": 8,
+      "topPt": 8,
+      "widthPt": 220,
+      "heightPt": 130,
+      "tabIndex": 0,
+      "value": 2,
+      "style": 1
+    },
+    "RootFrame": {
+      "type": "Frame",
+      "leftPt": 8,
+      "topPt": 145,
+      "widthPt": 220,
+      "heightPt": 32,
+      "tabIndex": 1,
+      "specialEffect": 3
+    },
+    "PageA": {
+      "type": "Page",
+      "parent": "Tabs",
+      "leftPt": 1,
+      "topPt": 18,
+      "widthPt": 216,
+      "heightPt": 108,
+      "tabIndex": 1,
+      "visible": false
+    },
+    "PageB": {
+      "type": "Page",
+      "parent": "Tabs",
+      "leftPt": 1,
+      "topPt": 18,
+      "widthPt": 216,
+      "heightPt": 108,
+      "tabIndex": 2,
+      "visible": false
+    },
+    "PageC": {
+      "type": "Page",
+      "parent": "Tabs",
+      "leftPt": 1,
+      "topPt": 18,
+      "widthPt": 216,
+      "heightPt": 108,
+      "tabIndex": 3,
+      "visible": true
+    },
+    "PageALabel": {
+      "type": "Label",
+      "parent": "PageA",
+      "leftPt": 8,
+      "topPt": 8,
+      "widthPt": 80,
+      "heightPt": 18,
+      "tabIndex": 0,
+      "caption": "Page A"
+    },
+    "PageAFrame": {
+      "type": "Frame",
+      "parent": "PageA",
+      "leftPt": 8,
+      "topPt": 34,
+      "widthPt": 190,
+      "heightPt": 56,
+      "tabIndex": 1,
+      "specialEffect": 3
+    },
+    "NestedLabel": {
+      "type": "Label",
+      "parent": "PageAFrame",
+      "leftPt": 8,
+      "topPt": 16,
+      "widthPt": 100,
+      "heightPt": 18,
+      "tabIndex": 0,
+      "caption": "Nested"
+    },
+    "PageBText": {
+      "type": "TextBox",
+      "parent": "PageB",
+      "leftPt": 8,
+      "topPt": 8,
+      "widthPt": 120,
+      "heightPt": 20,
+      "tabIndex": 0,
+      "value": "Page B"
+    },
+    "PageCButton": {
+      "type": "CommandButton",
+      "parent": "PageC",
+      "leftPt": 8,
+      "topPt": 8,
+      "widthPt": 80,
+      "heightPt": 22,
+      "tabIndex": 0,
+      "caption": "Page C"
+    },
+    "RootCheck": {
+      "type": "CheckBox",
+      "parent": "RootFrame",
+      "leftPt": 8,
+      "topPt": 10,
+      "widthPt": 100,
+      "heightPt": 18,
+      "tabIndex": 0,
+      "caption": "Root child"
+    },
+    "ContractImage": {
+      "type": "Image",
+      "leftPt": 235,
+      "topPt": 112,
+      "widthPt": 36,
+      "heightPt": 28,
+      "tabIndex": 2,
+      "autoSize": true,
+      "borderStyle": 0,
+      "pictureSizeMode": 3,
+      "pictureAlignment": 4,
+      "pictureTiling": true
+    },
+    "ContractScroll": {
+      "type": "ScrollBar",
+      "leftPt": 275,
+      "topPt": 112,
+      "widthPt": 72,
+      "heightPt": 18,
+      "tabIndex": 3,
+      "enabled": true,
+      "mousePointer": 3,
+      "min": -5,
+      "max": 250,
+      "position": 42,
+      "smallChange": 7,
+      "largeChange": 21,
+      "orientation": 1,
+      "proportionalThumb": true,
+      "delay": 75
+    },
+    "ContractSpin": {
+      "type": "SpinButton",
+      "leftPt": 351,
+      "topPt": 112,
+      "widthPt": 24,
+      "heightPt": 24,
+      "tabIndex": 4,
+      "enabled": true,
+      "mousePointer": 2,
+      "min": 1,
+      "max": 9,
+      "position": 4,
+      "smallChange": 2,
+      "orientation": 0,
+      "delay": 65
+    },
+    "ContractTabs": {
+      "type": "TabStrip",
+      "leftPt": 235,
+      "topPt": 145,
+      "widthPt": 140,
+      "heightPt": 24,
+      "tabIndex": 5,
+      "tabCaptions": ["First", "Second"],
+      "tabNames": ["FirstTab", "SecondTab"],
+      "value": 1,
+      "style": 1
+    }
+  },
+  "add": [
+    { "type": "MultiPage", "name": "Tabs", "parent": "" },
+    { "type": "Frame", "name": "RootFrame", "parent": "" },
+    { "type": "Page", "name": "PageA", "parent": "Tabs" },
+    { "type": "Page", "name": "PageB", "parent": "Tabs" },
+    { "type": "Page", "name": "PageC", "parent": "Tabs" },
+    { "type": "Label", "name": "PageALabel", "parent": "PageA" },
+    { "type": "Frame", "name": "PageAFrame", "parent": "PageA" },
+    { "type": "Label", "name": "NestedLabel", "parent": "PageAFrame" },
+    { "type": "TextBox", "name": "PageBText", "parent": "PageB" },
+    { "type": "CommandButton", "name": "PageCButton", "parent": "PageC" },
+    { "type": "CheckBox", "name": "RootCheck", "parent": "RootFrame" },
+    { "type": "Image", "name": "ContractImage", "parent": "" },
+    { "type": "ScrollBar", "name": "ContractScroll", "parent": "" },
+    { "type": "SpinButton", "name": "ContractSpin", "parent": "" },
+    { "type": "TabStrip", "name": "ContractTabs", "parent": "" }
+  ]
+}
