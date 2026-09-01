@@ -389,6 +389,10 @@ internal static class StructuredMsFormsParser
                 site.ExtraProperties["cancel"] = (site.BitFlags & (1u << 3)) != 0;
                 site.ExtraProperties["streamed"] = (site.BitFlags & (1u << 4)) != 0;
                 site.ExtraProperties["siteAutoSize"] = (site.BitFlags & (1u << 5)) != 0;
+                site.ExtraProperties["preserveHeight"] = (site.BitFlags & (1u << 8)) != 0;
+                site.ExtraProperties["fitToParent"] = (site.BitFlags & (1u << 9)) != 0;
+                site.ExtraProperties["selectChild"] = (site.BitFlags & (1u << 13)) != 0;
+                site.ExtraProperties["promoteControls"] = (site.BitFlags & (1u << 18)) != 0;
             }
 
             if (mask.HasObjectStreamSize)

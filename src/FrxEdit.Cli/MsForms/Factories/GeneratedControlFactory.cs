@@ -65,6 +65,7 @@ internal static class GeneratedControlFactory
             properties);
 
         var objectPayload = schema.BuildObjectPayload(request);
+        var siteFlags = BuildSiteFlags(schema.SiteFlags, properties);
         var sitePayload = FormSiteFactory.BuildOleSiteConcrete(
             name,
             siteId,
@@ -73,20 +74,58 @@ internal static class GeneratedControlFactory
             left,
             top,
             objectPayload.Length,
-            BuildSiteFlags(schema.SiteFlags, properties),
+            siteFlags,
             properties);
 
-        return new GeneratedControlBytes(sitePayload, objectPayload, schema.BuildMetadata(request, objectPayload.Length));
+        var metadata = new Dictionary<string, object?>(
+            schema.BuildMetadata(request, objectPayload.Length),
+            StringComparer.OrdinalIgnoreCase);
+        SynchronizeSiteFlagMetadata(metadata, siteFlags);
+        return new GeneratedControlBytes(sitePayload, objectPayload, metadata);
     }
 
-    private static uint BuildSiteFlags(uint defaults, Dictionary<string, object?> properties)
+    internal static uint BuildSiteFlags(uint defaults, Dictionary<string, object?>? properties)
     {
-        var flags = defaults;
+        var flags = properties is null
+            ? defaults
+            : MsFormsFactoryBinary.GetUInt32(properties, "siteBitFlagsRaw") ??
+              MsFormsFactoryBinary.GetUInt32(properties, "siteBitFlags") ??
+              defaults;
+        if (properties is null)
+        {
+            return flags;
+        }
         SetFlag(ref flags, 0, MsFormsFactoryBinary.GetBool(properties, "tabStop"));
         SetFlag(ref flags, 1, MsFormsFactoryBinary.GetBool(properties, "visible"));
         SetFlag(ref flags, 2, MsFormsFactoryBinary.GetBool(properties, "default"));
         SetFlag(ref flags, 3, MsFormsFactoryBinary.GetBool(properties, "cancel"));
+        SetFlag(ref flags, 5, MsFormsFactoryBinary.GetBool(properties, "siteAutoSize"));
+        SetFlag(ref flags, 8, MsFormsFactoryBinary.GetBool(properties, "preserveHeight"));
+        SetFlag(ref flags, 9, MsFormsFactoryBinary.GetBool(properties, "fitToParent"));
+        SetFlag(ref flags, 13, MsFormsFactoryBinary.GetBool(properties, "selectChild"));
+        const uint structuralSiteFlagMask = (1u << 4) | (1u << 18);
+        if (((flags ^ defaults) & structuralSiteFlagMask) != 0)
+        {
+            throw new CliException(
+                "Generated siteBitFlags streamed/promoteControls bits must match the control's object-stream/storage representation.");
+        }
         return flags;
+    }
+
+    internal static void SynchronizeSiteFlagMetadata(Dictionary<string, object?> metadata, uint flags)
+    {
+        metadata["siteBitFlags"] = $"0x{flags:X8}";
+        metadata["siteBitFlagsRaw"] = unchecked((int)flags);
+        metadata["tabStop"] = (flags & (1u << 0)) != 0;
+        metadata["visible"] = (flags & (1u << 1)) != 0;
+        metadata["default"] = (flags & (1u << 2)) != 0;
+        metadata["cancel"] = (flags & (1u << 3)) != 0;
+        metadata["streamed"] = (flags & (1u << 4)) != 0;
+        metadata["siteAutoSize"] = (flags & (1u << 5)) != 0;
+        metadata["preserveHeight"] = (flags & (1u << 8)) != 0;
+        metadata["fitToParent"] = (flags & (1u << 9)) != 0;
+        metadata["selectChild"] = (flags & (1u << 13)) != 0;
+        metadata["promoteControls"] = (flags & (1u << 18)) != 0;
     }
 
     private static void SetFlag(ref uint flags, int bit, bool? value)

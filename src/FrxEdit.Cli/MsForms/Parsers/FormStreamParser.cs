@@ -225,6 +225,7 @@ internal static class FormStreamParser
         properties["cancel"] = (value & (1u << 3)) != 0;
         properties["streamed"] = (value & (1u << 4)) != 0;
         properties["siteAutoSize"] = (value & (1u << 5)) != 0;
+        properties["preserveHeight"] = (value & (1u << 8)) != 0;
         properties["fitToParent"] = (value & (1u << 9)) != 0;
         properties["selectChild"] = (value & (1u << 13)) != 0;
         properties["promoteControls"] = (value & (1u << 18)) != 0;

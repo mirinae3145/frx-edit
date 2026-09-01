@@ -230,6 +230,10 @@ internal static class ObjectPayloadSerializer
         var textPropValues = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
         if (TryGetString(props, "fontName", out var fontName)) textPropValues["fontName"] = fontName;
         if (props.TryGetValue("fontSize", out var fontSize) && fontSize is not null) textPropValues["fontSize"] = fontSize;
+        if (props.TryGetValue("fontSizeRaw", out var fontSizeRaw) && fontSizeRaw is not null) textPropValues["fontSizeRaw"] = fontSizeRaw;
+        if (props.TryGetValue("fontEffects", out var fontEffects) && fontEffects is not null) textPropValues["fontEffects"] = fontEffects;
+        if (props.TryGetValue("fontEffectsHex", out var fontEffectsHex) && fontEffectsHex is not null) textPropValues["fontEffectsHex"] = fontEffectsHex;
+        if (props.TryGetValue("textPropsPropMask", out var textPropsPropMask) && textPropsPropMask is not null) textPropValues["textPropsPropMask"] = textPropsPropMask;
         if (props.TryGetValue("paragraphAlign", out var commandParagraphAlign) && commandParagraphAlign is not null) textPropValues["paragraphAlign"] = commandParagraphAlign;
         if (props.TryGetValue("textAlign", out var commandTextAlign) && commandTextAlign is not null) textPropValues["textAlign"] = commandTextAlign;
         if (props.TryGetValue("fontBold", out var fontBold) && fontBold is not null) textPropValues["fontBold"] = fontBold;
@@ -255,8 +259,8 @@ internal static class ObjectPayloadSerializer
         var backColor = TryGetString(props, "backColor", out var backColorText) && TryParseVbaColor(backColorText, out var parsedBack)
             ? parsedBack
             : defaultBackColor;
-        var various = TryGetInt(props, "variousPropertyBitsRaw", out var variousRaw)
-            ? unchecked((uint)variousRaw)
+        var various = TryGetUInt32(props, "variousPropertyBitsRaw", out var variousRaw)
+            ? variousRaw
             : defaultVarious;
         var picturePosition = TryGetInt(props, "picturePosition", out var picturePositionRaw)
             ? unchecked((uint)picturePositionRaw)
@@ -279,6 +283,8 @@ internal static class ObjectPayloadSerializer
         if (mousePointer != 0) propMask |= 1u << 6;
         if (!string.IsNullOrEmpty(accelerator)) propMask |= 1u << 8;
         if (!takeFocusOnClick) propMask |= 1u << 9;
+        if (HasNativePictureStream(props, "picture")) propMask |= 1u << 7;
+        if (HasNativePictureStream(props, "mouseIcon")) propMask |= 1u << 10;
         if (TryGetString(props, "commandButtonPropMask", out var existingMask) && TryParseHexUInt32(existingMask, out var existingMaskValue))
         {
             propMask |= existingMaskValue & ((1u << 7) | (1u << 10));
@@ -320,14 +326,7 @@ internal static class ObjectPayloadSerializer
         WriteInt32(extra, control.RawWidth ?? 0);
         WriteInt32(extra, control.RawHeight ?? 0);
 
-        var existingStreamData = Array.Empty<byte>();
-        if (TryGetInt(props, "commandButtonDeclaredEndLocalOffset", out var oldDeclaredEnd))
-        {
-            if (oldDeclaredEnd >= 0 && oldDeclaredEnd <= oldTextPropsStart && oldTextPropsStart <= originalBytes.Length)
-            {
-                existingStreamData = RebuildTrailingData(props, originalBytes, oldDeclaredEnd, oldTextPropsStart);
-            }
-        }
+        var existingStreamData = BuildOrderedPictureStreams(props, originalBytes, "picture", "mouseIcon");
 
         using var output = new MemoryStream();
         output.WriteByte(0);
@@ -356,6 +355,10 @@ internal static class ObjectPayloadSerializer
         var textPropValues = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
         if (TryGetString(props, "fontName", out var fontName)) textPropValues["fontName"] = fontName;
         if (props.TryGetValue("fontSize", out var fontSize) && fontSize is not null) textPropValues["fontSize"] = fontSize;
+        if (props.TryGetValue("fontSizeRaw", out var fontSizeRaw) && fontSizeRaw is not null) textPropValues["fontSizeRaw"] = fontSizeRaw;
+        if (props.TryGetValue("fontEffects", out var fontEffects) && fontEffects is not null) textPropValues["fontEffects"] = fontEffects;
+        if (props.TryGetValue("fontEffectsHex", out var fontEffectsHex) && fontEffectsHex is not null) textPropValues["fontEffectsHex"] = fontEffectsHex;
+        if (props.TryGetValue("textPropsPropMask", out var textPropsPropMask) && textPropsPropMask is not null) textPropValues["textPropsPropMask"] = textPropsPropMask;
         if (props.TryGetValue("paragraphAlign", out var paragraphAlign) && paragraphAlign is not null) textPropValues["paragraphAlign"] = paragraphAlign;
         if (props.TryGetValue("textAlign", out var textAlign) && textAlign is not null) textPropValues["textAlign"] = textAlign;
         if (props.TryGetValue("fontBold", out var fontBold) && fontBold is not null) textPropValues["fontBold"] = fontBold;
@@ -386,8 +389,8 @@ internal static class ObjectPayloadSerializer
         var borderColor = TryGetString(props, "borderColor", out var borderColorText) && TryParseVbaColor(borderColorText, out var parsedBorder)
             ? parsedBorder
             : defaultBorderColor;
-        var various = TryGetInt(props, "variousPropertyBitsRaw", out var variousRaw)
-            ? unchecked((uint)variousRaw)
+        var various = TryGetUInt32(props, "variousPropertyBitsRaw", out var variousRaw)
+            ? variousRaw
             : defaultVarious;
         var picturePosition = TryGetInt(props, "picturePosition", out var picturePositionRaw)
             ? unchecked((uint)picturePositionRaw)
@@ -408,6 +411,8 @@ internal static class ObjectPayloadSerializer
         if (borderStyle != 0) propMask |= 1u << 8;
         if (specialEffect != 0) propMask |= 1u << 9;
         if (!string.IsNullOrEmpty(accelerator)) propMask |= 1u << 11;
+        if (HasNativePictureStream(props, "picture")) propMask |= 1u << 10;
+        if (HasNativePictureStream(props, "mouseIcon")) propMask |= 1u << 12;
         if (TryGetString(props, "propMask", out var existingMask) && TryParseHexUInt32(existingMask, out var existingMaskValue))
         {
             propMask |= existingMaskValue & ((1u << 10) | (1u << 12));
@@ -417,7 +422,7 @@ internal static class ObjectPayloadSerializer
         if ((propMask & (1u << 0)) != 0) WriteUInt32(dataBlock, foreColor);
         if ((propMask & (1u << 1)) != 0) WriteUInt32(dataBlock, backColor);
         if ((propMask & (1u << 2)) != 0) WriteUInt32(dataBlock, various);
-        WriteCount(dataBlock, captionBytes.Length);
+        if ((propMask & (1u << 3)) != 0) WriteCount(dataBlock, captionBytes.Length);
         if ((propMask & (1u << 4)) != 0) WriteUInt32(dataBlock, picturePosition);
         if ((propMask & (1u << 6)) != 0)
         {
@@ -437,19 +442,15 @@ internal static class ObjectPayloadSerializer
         WritePadding(dataBlock, 4);
 
         using var extra = new MemoryStream();
-        extra.Write(captionBytes);
-        WritePadding(extra, 4);
+        if ((propMask & (1u << 3)) != 0)
+        {
+            extra.Write(captionBytes);
+            WritePadding(extra, 4);
+        }
         WriteInt32(extra, control.RawWidth ?? 0);
         WriteInt32(extra, control.RawHeight ?? 0);
 
-        var existingStreamData = Array.Empty<byte>();
-        if (TryGetInt(props, "labelDeclaredEndLocalOffset", out var oldDeclaredEnd) &&
-            oldDeclaredEnd >= 0 &&
-            oldDeclaredEnd <= oldTextPropsStart &&
-            oldTextPropsStart <= originalBytes.Length)
-        {
-            existingStreamData = RebuildTrailingData(props, originalBytes, oldDeclaredEnd, oldTextPropsStart);
-        }
+        var existingStreamData = BuildOrderedPictureStreams(props, originalBytes, "picture", "mouseIcon");
 
         using var output = new MemoryStream();
         output.WriteByte(0);
@@ -493,8 +494,8 @@ internal static class ObjectPayloadSerializer
         var borderColor = TryGetString(props, "borderColor", out var borderColorText) && TryParseVbaColor(borderColorText, out var parsedBorder)
             ? parsedBorder
             : defaultBorderColor;
-        var various = TryGetInt(props, "variousPropertyBitsRaw", out var variousRaw)
-            ? unchecked((uint)variousRaw)
+        var various = TryGetUInt32(props, "variousPropertyBitsRaw", out var variousRaw)
+            ? variousRaw
             : defaultVarious;
         var maxLength = TryGetInt(props, "maxLength", out var maxLengthRaw) ? maxLengthRaw : 0;
         var borderStyle = TryGetInt(props, "borderStyle", out var borderStyleRaw) ? borderStyleRaw : defaultBorderStyle;
@@ -514,6 +515,8 @@ internal static class ObjectPayloadSerializer
         if (valueBytes.Length > 0) propMask |= 1ul << 22;
         if (borderColor != defaultBorderColor) propMask |= 1ul << 25;
         if (specialEffect != defaultSpecialEffect) propMask |= 1ul << 26;
+        if (HasNativePictureStream(props, "mouseIcon")) propMask |= 1ul << 27;
+        if (HasNativePictureStream(props, "picture")) propMask |= 1ul << 28;
 
         if (TryGetString(props, "propMask", out var oldMaskText) && TryParseHexUInt64(oldMaskText, out var oldMask))
         {
@@ -556,6 +559,10 @@ internal static class ObjectPayloadSerializer
         var textPropValues = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
         if (TryGetString(props, "fontName", out var fontName)) textPropValues["fontName"] = fontName;
         if (props.TryGetValue("fontSize", out var fontSize) && fontSize is not null) textPropValues["fontSize"] = fontSize;
+        if (props.TryGetValue("fontSizeRaw", out var fontSizeRaw) && fontSizeRaw is not null) textPropValues["fontSizeRaw"] = fontSizeRaw;
+        if (props.TryGetValue("fontEffects", out var fontEffects) && fontEffects is not null) textPropValues["fontEffects"] = fontEffects;
+        if (props.TryGetValue("fontEffectsHex", out var fontEffectsHex) && fontEffectsHex is not null) textPropValues["fontEffectsHex"] = fontEffectsHex;
+        if (props.TryGetValue("textPropsPropMask", out var textPropsPropMask) && textPropsPropMask is not null) textPropValues["textPropsPropMask"] = textPropsPropMask;
         if (props.TryGetValue("paragraphAlign", out var paragraphAlign) && paragraphAlign is not null) textPropValues["paragraphAlign"] = paragraphAlign;
         if (props.TryGetValue("textAlign", out var textAlign) && textAlign is not null) textPropValues["textAlign"] = textAlign;
         if (props.TryGetValue("fontBold", out var fontBold) && fontBold is not null) textPropValues["fontBold"] = fontBold;
@@ -568,16 +575,7 @@ internal static class ObjectPayloadSerializer
         var textPropsMask = TextPropsFactory.WithParagraphAlignIfNeeded(TextPropsFactory.StandardMask, textPropValues);
         var textProps = TextPropsFactory.Build(textPropValues, textPropsMask);
 
-        var existingStreamData = Array.Empty<byte>();
-        if (TryGetInt(props, "morphDataStreamDataLocalOffset", out var streamDataStart) &&
-            TryGetInt(props, "morphDataStreamDataEndLocalOffset", out var streamDataEnd) &&
-            streamDataStart >= 0 &&
-            streamDataEnd >= streamDataStart &&
-            streamDataEnd <= oldTextPropsStart &&
-            streamDataEnd <= originalBytes.Length)
-        {
-            existingStreamData = RebuildTrailingData(props, originalBytes, streamDataStart, streamDataEnd);
-        }
+        var existingStreamData = BuildOrderedPictureStreams(props, originalBytes, "mouseIcon", "picture");
 
         var controlBlock = MsFormsFactoryBinary.BuildVersionedMorphControl(propMask, dataBlock.ToArray(), extra.ToArray());
         using var output = new MemoryStream();
@@ -611,9 +609,12 @@ internal static class ObjectPayloadSerializer
     private static byte[] SerializeMorphButtonRebuilt(ControlInfo control)
     {
         var props = control.Properties!;
-        IGeneratedControlSchema schema = control.Type.Equals("CheckBox", StringComparison.OrdinalIgnoreCase)
-            ? new CheckBoxControlSchema()
-            : new OptionButtonControlSchema();
+        IGeneratedControlSchema schema = control.Type.ToLowerInvariant() switch
+        {
+            "checkbox" => new CheckBoxControlSchema(),
+            "togglebutton" => new ToggleButtonControlSchema(),
+            _ => new OptionButtonControlSchema()
+        };
         var request = new GeneratedControlRequest(
             control.Type,
             control.Name,
@@ -623,7 +624,7 @@ internal static class ObjectPayloadSerializer
             Top: control.Top ?? 0,
             Width: control.RawWidth ?? 0,
             Height: control.RawHeight ?? 0,
-            Caption: TryGetString(props, "caption", out var caption) ? caption : control.Name,
+            Caption: TryGetString(props, "caption", out var caption) ? caption : null,
             Value: TryGetString(props, "value", out var value) ? value : "0",
             Properties: props);
         return schema.BuildObjectPayload(request);
@@ -643,8 +644,8 @@ internal static class ObjectPayloadSerializer
         var backColor = TryGetString(props, "backColor", out var backColorText) && TryParseVbaColor(backColorText, out var parsedBack)
             ? parsedBack
             : defaultBackColor;
-        var various = TryGetInt(props, "variousPropertyBitsRaw", out var variousRaw)
-            ? unchecked((uint)variousRaw)
+        var various = TryGetUInt32(props, "variousPropertyBitsRaw", out var variousRaw)
+            ? variousRaw
             : defaultVarious;
         var borderStyle = TryGetInt(props, "borderStyle", out var borderStyleRaw) ? borderStyleRaw : 1;
         var mousePointer = TryGetInt(props, "mousePointer", out var mousePointerRaw) ? mousePointerRaw : 0;
@@ -663,11 +664,11 @@ internal static class ObjectPayloadSerializer
         if (mousePointer != 0) propMask |= 1u << 6;
         if (pictureSizeMode != 0) propMask |= 1u << 7;
         if (specialEffect != 0) propMask |= 1u << 8;
-        if (TryGetString(props, "picture", out var _)) propMask |= 1u << 10;
+        if (HasNativePictureStream(props, "picture")) propMask |= 1u << 10;
         if (pictureAlignment != 2) propMask |= 1u << 11;
         if (pictureTiling) propMask |= 1u << 12;
         if (various != defaultVarious) propMask |= 1u << 13;
-        if (TryGetString(props, "mouseIcon", out var _)) propMask |= 1u << 14;
+        if (HasNativePictureStream(props, "mouseIcon")) propMask |= 1u << 14;
 
         using var dataBlock = new MemoryStream();
         if ((propMask & (1u << 3)) != 0) WriteUInt32(dataBlock, borderColor);
@@ -710,27 +711,11 @@ internal static class ObjectPayloadSerializer
             WriteInt32(extra, control.RawHeight ?? 0);
         }
 
-        var existingStreamData = Array.Empty<byte>();
-        if (TryGetInt(props, "imageStreamDataLocalOffset", out var streamDataOffset) &&
-            TryGetInt(props, "imageStreamDataEndLocalOffset", out var streamDataEnd) &&
-            streamDataEnd >= streamDataOffset &&
-            original.Length > 0)
-        {
-            existingStreamData = RebuildTrailingData(props, original.ToArray(), streamDataOffset, streamDataEnd);
-        }
+        var existingStreamData = BuildOrderedPictureStreams(props, original.ToArray(), "picture", "mouseIcon");
 
-        var header = new byte[8];
-        header[0] = 0x00;
-        header[1] = 0x02;
-        BinaryPrimitives.WriteUInt16LittleEndian(header.AsSpan(2, 2), checked((ushort)(dataBlock.Length + extra.Length)));
-        BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(4, 4), propMask);
-
+        var controlBlock = MsFormsFactoryBinary.BuildVersionedControl(0, 2, propMask, dataBlock.ToArray(), extra.ToArray());
         var resultStream = new MemoryStream();
-        resultStream.Write(header);
-        dataBlock.Position = 0;
-        dataBlock.CopyTo(resultStream);
-        extra.Position = 0;
-        extra.CopyTo(resultStream);
+        resultStream.Write(controlBlock);
         resultStream.Write(existingStreamData);
         return resultStream.ToArray();
     }
@@ -744,7 +729,7 @@ internal static class ObjectPayloadSerializer
 
         var foreColor = TryGetString(props, "foreColor", out var foreColorText) && TryParseVbaColor(foreColorText, out var parsedFore) ? parsedFore : defaultForeColor;
         var backColor = TryGetString(props, "backColor", out var backColorText) && TryParseVbaColor(backColorText, out var parsedBack) ? parsedBack : defaultBackColor;
-        var various = TryGetInt(props, "variousPropertyBitsRaw", out var variousRaw) ? unchecked((uint)variousRaw) : defaultVarious;
+        var various = TryGetUInt32(props, "variousPropertyBitsRaw", out var variousRaw) ? variousRaw : defaultVarious;
         var mousePointer = TryGetInt(props, "mousePointer", out var mousePointerRaw) ? mousePointerRaw : 0;
         
         var min = TryGetInt(props, "min", out var minRaw) ? minRaw : 0;
@@ -803,11 +788,7 @@ internal static class ObjectPayloadSerializer
         BinaryPrimitives.WriteUInt16LittleEndian(header.AsSpan(2, 2), checked((ushort)(4 + dataBlock.Length)));
         BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(4, 4), propMask);
 
-        var existingStreamData = Array.Empty<byte>();
-        if (TryGetInt(props, "scrollBarDeclaredEndLocalOffset", out var declaredEnd) && original.Length > 0 && original.Length >= declaredEnd)
-        {
-            existingStreamData = original.Slice(declaredEnd).ToArray();
-        }
+        var existingStreamData = BuildOrderedPictureStreams(props, original.ToArray(), "mouseIcon");
 
         var resultStream = new MemoryStream();
         resultStream.Write(header);
@@ -826,7 +807,7 @@ internal static class ObjectPayloadSerializer
 
         var foreColor = TryGetString(props, "foreColor", out var foreColorText) && TryParseVbaColor(foreColorText, out var parsedFore) ? parsedFore : defaultForeColor;
         var backColor = TryGetString(props, "backColor", out var backColorText) && TryParseVbaColor(backColorText, out var parsedBack) ? parsedBack : defaultBackColor;
-        var various = TryGetInt(props, "variousPropertyBitsRaw", out var variousRaw) ? unchecked((uint)variousRaw) : defaultVarious;
+        var various = TryGetUInt32(props, "variousPropertyBitsRaw", out var variousRaw) ? variousRaw : defaultVarious;
         var mousePointer = TryGetInt(props, "mousePointer", out var mousePointerRaw) ? mousePointerRaw : 0;
         
         var min = TryGetInt(props, "min", out var minRaw) ? minRaw : 0;
@@ -878,11 +859,7 @@ internal static class ObjectPayloadSerializer
         BinaryPrimitives.WriteUInt16LittleEndian(header.AsSpan(2, 2), checked((ushort)(4 + dataBlock.Length)));
         BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(4, 4), propMask);
 
-        var existingStreamData = Array.Empty<byte>();
-        if (TryGetInt(props, "spinButtonDeclaredEndLocalOffset", out var declaredEnd) && original.Length > 0 && original.Length >= declaredEnd)
-        {
-            existingStreamData = original.Slice(declaredEnd).ToArray();
-        }
+        var existingStreamData = BuildOrderedPictureStreams(props, original.ToArray(), "mouseIcon");
 
         var resultStream = new MemoryStream();
         resultStream.Write(header);
@@ -904,7 +881,7 @@ internal static class ObjectPayloadSerializer
             Top: control.Top ?? 0,
             Width: control.RawWidth ?? 0,
             Height: control.RawHeight ?? 0,
-            Caption: TryGetString(props, "caption", out var caption) ? caption : control.Name,
+            Caption: TryGetString(props, "caption", out var caption) ? caption : null,
             Value: TryGetString(props, "value", out var value) ? value : string.Empty,
             Properties: props);
         var schema = new TabStripControlSchema();
@@ -1358,6 +1335,13 @@ internal static class ObjectPayloadSerializer
         }
     }
 
+    private static bool TryGetUInt32(Dictionary<string, object?> props, string key, out uint value)
+    {
+        var parsed = MsFormsFactoryBinary.GetUInt32(props, key);
+        value = parsed ?? 0;
+        return parsed is not null;
+    }
+
     private static bool TryGetBool(Dictionary<string, object?> props, string key, out bool value)
     {
         value = false;
@@ -1469,6 +1453,43 @@ internal static class ObjectPayloadSerializer
             ms.Write(existing, cursor, existing.Length - cursor);
         }
         return ms.ToArray();
+    }
+
+    private static bool HasNativePictureStream(Dictionary<string, object?> props, string propertyName) =>
+        TryGetString(props, propertyName, out var value) &&
+        value.StartsWith("base64:", StringComparison.OrdinalIgnoreCase) &&
+        value.Length > "base64:".Length;
+
+    private static byte[] BuildOrderedPictureStreams(
+        Dictionary<string, object?> props,
+        byte[] originalBytes,
+        params string[] propertyNames)
+    {
+        using var output = new MemoryStream();
+        foreach (var propertyName in propertyNames)
+        {
+            if (HasNativePictureStream(props, propertyName) && TryGetString(props, propertyName, out var encoded))
+            {
+                try
+                {
+                    var bytes = Convert.FromBase64String(encoded["base64:".Length..]);
+                    output.Write(bytes);
+                }
+                catch (FormatException ex)
+                {
+                    throw new CliException($"{propertyName} contains invalid base64 native picture data: {ex.Message}");
+                }
+                continue;
+            }
+
+            if (TryGetInt(props, $"{propertyName}StreamLocalOffset", out var start) &&
+                TryGetInt(props, $"{propertyName}StreamEndLocalOffset", out var end) &&
+                start >= 0 && end >= start && end <= originalBytes.Length)
+            {
+                output.Write(originalBytes, start, end - start);
+            }
+        }
+        return output.ToArray();
     }
 
     private readonly record struct StringSpanInfo(
