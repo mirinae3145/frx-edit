@@ -99,7 +99,7 @@ internal sealed class FrxEditApp(TextWriter stdout, TextWriter stderr)
             
             if (outPath is not null)
             {
-                var vbaOut = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(outPath))!, project.FormName + ".vba");
+                var vbaOut = Path.ChangeExtension(Path.GetFullPath(outPath), ".vba");
                 File.WriteAllText(vbaOut, project.VbaCode.TrimStart('\r', '\n'), project.Encoding);
             }
             
@@ -227,6 +227,7 @@ internal sealed class FrxEditApp(TextWriter stdout, TextWriter stderr)
             var patch = JsonSerializer.Deserialize<PatchDocument>(File.ReadAllText(Path.GetFullPath(patchPath)), JsonOptions)
                 ?? throw new CliException("Patch file is empty.");
             var project = UserFormProject.Load(outFrmPath);
+            patch.Normalize(project.FormName);
             var source = FrxBinary.Read(project.FrxPath);
             var sourceLayout = source.Inspect(project.KnownControlNames, project.ControlScopes, ParserMode.Strict, project.FormProperties);
             PatchValidator.Validate(patch, sourceLayout.Controls, formName: project.FormName);
@@ -622,7 +623,7 @@ internal sealed class FrxEditApp(TextWriter stdout, TextWriter stderr)
                         File.WriteAllBytes(filePath, bytes);
                         
                         // Update the JSON to point to the file in the subfolder
-                        props[key] = JsonSerializer.SerializeToElement($"file:{assetsDirName}/{fileName}");
+                        props[key] = JsonSerializer.SerializeToElement($"file://{assetsDirName}/{fileName}");
                     }
                 }
             }

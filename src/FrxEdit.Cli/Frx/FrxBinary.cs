@@ -352,7 +352,7 @@ internal sealed class FrxBinary
         }
 
         var controls = new Dictionary<int, ControlInfo>();
-        var controlsBySiteId = new Dictionary<uint, string>();
+        var controlsByStorageAndSiteId = new Dictionary<string, Dictionary<uint, string>>(StringComparer.OrdinalIgnoreCase);
         var formControlByOwner = new Dictionary<string, FormControlProperties>(StringComparer.OrdinalIgnoreCase);
         var pendingContainerOwners = new Queue<string>();
         var fStreams = storage.Streams
@@ -368,7 +368,7 @@ internal sealed class FrxBinary
                 continue;
             }
 
-            var streamOwner = ResolveStreamOwner(stream, controlsBySiteId);
+            var streamOwner = ResolveStreamOwner(stream, controlsByStorageAndSiteId);
             if (streamOwner is null && stream.ParentPath is not null && !IsRootStoragePath(stream.ParentPath) && pendingContainerOwners.Count > 0)
             {
                 streamOwner = pendingContainerOwners.Dequeue();
@@ -397,6 +397,13 @@ internal sealed class FrxBinary
 
                 if (TryGetSiteId(control, out var siteId))
                 {
+                    var storagePath = stream.ParentPath ?? "Root Entry";
+                    if (!controlsByStorageAndSiteId.TryGetValue(storagePath, out var controlsBySiteId))
+                    {
+                        controlsBySiteId = new Dictionary<uint, string>();
+                        controlsByStorageAndSiteId[storagePath] = controlsBySiteId;
+                    }
+
                     controlsBySiteId[siteId] = control.Name;
                 }
 
@@ -426,7 +433,7 @@ internal sealed class FrxBinary
             }
         }
 
-        ApplyMultiPageXStreams(controls, storage.Streams, controlsBySiteId);
+        ApplyMultiPageXStreams(controls, storage.Streams, controlsByStorageAndSiteId);
         AnnotateStorageBackedControls(controls, storage.Streams);
 
         return controls.Values.ToList();
@@ -759,12 +766,12 @@ internal sealed class FrxBinary
     private static void ApplyMultiPageXStreams(
         Dictionary<int, ControlInfo> controls,
         IReadOnlyList<StorageEntryDump> streams,
-        IReadOnlyDictionary<uint, string> controlsBySiteId)
+        IReadOnlyDictionary<string, Dictionary<uint, string>> controlsByStorageAndSiteId)
     {
         var byName = controls.ToDictionary(pair => pair.Value.Name, pair => pair.Key, StringComparer.OrdinalIgnoreCase);
         foreach (var xStream in streams.Where(s => s.Kind == "Stream" && s.Name == "x"))
         {
-            var owner = ResolveStreamOwner(xStream, controlsBySiteId);
+            var owner = ResolveStreamOwner(xStream, controlsByStorageAndSiteId);
             if (owner is null || !byName.TryGetValue(owner, out var ownerKey))
             {
                 continue;
@@ -794,7 +801,10 @@ internal sealed class FrxBinary
             for (var i = 0; i < xProperties.PageIds.Count; i++)
             {
                 var pageId = xProperties.PageIds[i];
-                if (!controlsBySiteId.TryGetValue(pageId, out var pageName) || !byName.TryGetValue(pageName, out var pageKey))
+                if (string.IsNullOrEmpty(xStream.ParentPath) ||
+                    !controlsByStorageAndSiteId.TryGetValue(xStream.ParentPath, out var pagesBySiteId) ||
+                    !pagesBySiteId.TryGetValue(pageId, out var pageName) ||
+                    !byName.TryGetValue(pageName, out var pageKey))
                 {
                     continue;
                 }
@@ -840,7 +850,9 @@ internal sealed class FrxBinary
         path.Equals("Root Entry", StringComparison.OrdinalIgnoreCase) ||
         !path.Contains('/', StringComparison.Ordinal);
 
-    private static string? ResolveStreamOwner(StorageEntryDump stream, IReadOnlyDictionary<uint, string> controlsBySiteId)
+    private static string? ResolveStreamOwner(
+        StorageEntryDump stream,
+        IReadOnlyDictionary<string, Dictionary<uint, string>> controlsByStorageAndSiteId)
     {
         if (string.IsNullOrEmpty(stream.ParentPath) || IsRootStoragePath(stream.ParentPath))
         {
@@ -849,8 +861,10 @@ internal sealed class FrxBinary
 
         var slash = stream.ParentPath.LastIndexOf('/');
         var storageName = slash >= 0 ? stream.ParentPath[(slash + 1)..] : stream.ParentPath;
+        var ownerScopePath = slash >= 0 ? stream.ParentPath[..slash] : stream.ParentPath;
         if (storageName.Length > 1 && storageName[0] is 'i' or 'I' &&
             uint.TryParse(storageName[1..], NumberStyles.Integer, CultureInfo.InvariantCulture, out var siteId) &&
+            controlsByStorageAndSiteId.TryGetValue(ownerScopePath, out var controlsBySiteId) &&
             controlsBySiteId.TryGetValue(siteId, out var owner))
         {
             return owner;
