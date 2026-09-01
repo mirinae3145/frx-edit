@@ -1,7 +1,11 @@
 
+internal sealed record FormStreamParseResult(
+    IReadOnlyList<StructuredControlRecord> Controls,
+    IReadOnlyList<SiteDescriptor> InternalSites);
+
 internal static class FormStreamParser
 {
-    public static IReadOnlyList<StructuredControlRecord> Read(
+    public static FormStreamParseResult Read(
         StorageEntryDump stream,
         IReadOnlySet<string>? knownControlNames,
         StorageEntryDump? objectStream = null,
@@ -9,7 +13,7 @@ internal static class FormStreamParser
     {
         if (parserMode == ParserMode.Legacy)
         {
-            return LegacyNameScanParser.Scan(stream, knownControlNames);
+            return new FormStreamParseResult(LegacyNameScanParser.Scan(stream, knownControlNames), []);
         }
 
         var sites = StructuredMsFormsParser.Parse(stream);
@@ -20,15 +24,19 @@ internal static class FormStreamParser
                 StructuredMsFormsParser.EnrichFromObjectStream(sites, objectStream);
             }
 
-            return sites
+            var controls = sites
                 .Where(s => !s.IsInternalSite)
                 .Select(s => MapToRecord(s, stream, objectStream))
                 .ToList();
+            var internalSites = sites
+                .Where(s => s.IsInternalSite)
+                .ToList();
+            return new FormStreamParseResult(controls, internalSites);
         }
 
         if (IsDocumentedEmptyParentStorage(stream, objectStream))
         {
-            return [];
+            return new FormStreamParseResult([], []);
         }
 
         if (parserMode == ParserMode.Strict)
@@ -36,7 +44,7 @@ internal static class FormStreamParser
             throw new CliException($"Strict parser mode could not parse FormSiteData in stream '{stream.Path ?? stream.Name}'.");
         }
 
-        return LegacyNameScanParser.Scan(stream, knownControlNames);
+        return new FormStreamParseResult(LegacyNameScanParser.Scan(stream, knownControlNames), []);
     }
 
     private static bool IsDocumentedEmptyParentStorage(StorageEntryDump stream, StorageEntryDump? objectStream)
