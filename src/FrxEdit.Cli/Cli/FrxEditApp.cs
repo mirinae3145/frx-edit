@@ -622,7 +622,7 @@ internal sealed class FrxEditApp(TextWriter stdout, TextWriter stderr)
                         File.WriteAllBytes(filePath, bytes);
                         
                         // Update the JSON to point to the file in the subfolder
-                        props[key] = JsonSerializer.SerializeToElement($"file:{assetsDirName}/{fileName}");
+                        props[key] = JsonSerializer.SerializeToElement($"file://{assetsDirName}/{fileName}");
                     }
                 }
             }
