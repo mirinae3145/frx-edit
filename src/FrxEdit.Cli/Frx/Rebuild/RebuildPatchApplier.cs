@@ -621,11 +621,14 @@ internal static class RebuildPatchApplier
             maxId++;
             props["isAddedControl"] = true;
             
-            if (patchedByName != null && patchedByName.TryGetValue(name, out var requested))
+            var requestedProperties = patchedByName != null && patchedByName.TryGetValue(name, out var requested)
+                ? requested
+                : null;
+            if (requestedProperties is not null)
             {
-                foreach (var kvp in requested)
+                foreach (var kvp in requestedProperties)
                 {
-                    ApplyPropertyToDictionary(name, props, kvp.Key, kvp.Value, patchDir);
+                    ApplyPropertyToDictionary(name, type, props, kvp.Key, kvp.Value, patchDir);
                 }
             }
 
@@ -649,9 +652,18 @@ internal static class RebuildPatchApplier
             props["siteName"] = name;
             props["siteId"] = maxId;
             props["id"] = maxId;
-            props["tabIndex"] = add.Properties is not null && add.Properties.TryGetValue("tabIndex", out var tabIndexElement)
-                ? RequireUInt16(name, "tabIndex", tabIndexElement)
-                : NextTabIndexForParent(existingControls.Concat(result), parent);
+            int? requestedTabIndex = null;
+            if (add.Properties is not null && add.Properties.TryGetValue("tabIndex", out var addTabIndex))
+            {
+                requestedTabIndex = RequireUInt16(name, "tabIndex", addTabIndex);
+            }
+            else if (requestedProperties is not null && requestedProperties.TryGetValue("tabIndex", out var propertyTabIndex))
+            {
+                requestedTabIndex = RequireUInt16(name, "tabIndex", propertyTabIndex);
+            }
+
+            props["tabIndex"] = requestedTabIndex
+                ?? NextTabIndexForParent(existingControls.Concat(result), parent);
 
             if (!string.IsNullOrWhiteSpace(add.Caption))
             {
@@ -665,7 +677,7 @@ internal static class RebuildPatchApplier
 
             foreach (var (propertyName, value) in add.Properties ?? new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase))
             {
-                ApplyAddPropertyToDictionary(name, props, propertyName, value, patchDir);
+                ApplyAddPropertyToDictionary(name, type, props, propertyName, value, patchDir);
             }
 
             var left = add.Left ?? ToRawPoints(add.LeftPt) ?? template?.Left ?? 0;
@@ -976,7 +988,7 @@ internal static class RebuildPatchApplier
         var props = new Dictionary<string, object?>(control.Properties, StringComparer.OrdinalIgnoreCase);
         foreach (var (propertyName, value) in requested ?? new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase))
         {
-            ApplyPropertyToDictionary(control.Name, props, propertyName, value, patchDir);
+            ApplyPropertyToDictionary(control.Name, control.Type, props, propertyName, value, patchDir);
         }
 
         var left = control.Left;
@@ -1020,15 +1032,19 @@ internal static class RebuildPatchApplier
         };
     }
 
-    private static void ApplyPropertyToDictionary(string controlName, Dictionary<string, object?> props, string propertyName, JsonElement value, string? patchDir)
+    private static void ApplyPropertyToDictionary(string controlName, string controlType, Dictionary<string, object?> props, string propertyName, JsonElement value, string? patchDir)
     {
         switch (propertyName.ToLowerInvariant())
         {
             case "caption":
-            case "value":
             case "groupname":
             case "fontname":
                 props[CanonicalPropertyName(propertyName)] = RequireString(controlName, propertyName, value);
+                break;
+            case "value":
+                props["value"] = controlType.Equals("MultiPage", StringComparison.OrdinalIgnoreCase)
+                    ? RequireInt32(controlName, propertyName, value)
+                    : RequireString(controlName, propertyName, value);
                 break;
             case "passwordchar":
                 var passwordChar = RequireString(controlName, propertyName, value);
@@ -1207,7 +1223,7 @@ internal static class RebuildPatchApplier
         }
     }
 
-    private static void ApplyAddPropertyToDictionary(string controlName, Dictionary<string, object?> props, string propertyName, JsonElement value, string? patchDir)
+    private static void ApplyAddPropertyToDictionary(string controlName, string controlType, Dictionary<string, object?> props, string propertyName, JsonElement value, string? patchDir)
     {
         switch (propertyName.ToLowerInvariant())
         {
@@ -1288,7 +1304,7 @@ internal static class RebuildPatchApplier
                 props[CanonicalPropertyName(propertyName)] = RequireStringArray(controlName, propertyName, value);
                 break;
             default:
-                ApplyPropertyToDictionary(controlName, props, propertyName, value, patchDir);
+                ApplyPropertyToDictionary(controlName, controlType, props, propertyName, value, patchDir);
                 break;
         }
     }
