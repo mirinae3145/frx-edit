@@ -1095,6 +1095,7 @@ internal sealed class TabStripControlSchema : IGeneratedControlSchema
     {
         var captions = GetTabCaptions(request);
         var names = GetTabNames(request, captions);
+        var listIndex = GetListIndex(request, captions.Count);
         var emptyStrings = Enumerable.Repeat(string.Empty, captions.Count).ToArray();
         var captionBlock = BuildArrayStringBlock(captions);
         var tooltipBlock = BuildArrayStringBlock(emptyStrings);
@@ -1103,7 +1104,7 @@ internal sealed class TabStripControlSchema : IGeneratedControlSchema
         var acceleratorBlock = BuildArrayStringBlock(emptyStrings);
 
         using var dataBlock = new MemoryStream();
-        MsFormsFactoryBinary.WriteInt32(dataBlock, 0);
+        MsFormsFactoryBinary.WriteInt32(dataBlock, listIndex);
         MsFormsFactoryBinary.WriteUInt32(dataBlock, checked((uint)captionBlock.Length));
         MsFormsFactoryBinary.WriteUInt32(dataBlock, checked((uint)tooltipBlock.Length));
         MsFormsFactoryBinary.WriteUInt32(dataBlock, checked((uint)nameBlock.Length));
@@ -1136,11 +1137,12 @@ internal sealed class TabStripControlSchema : IGeneratedControlSchema
     {
         var captions = GetTabCaptions(request);
         var names = GetTabNames(request, captions);
+        var listIndex = GetListIndex(request, captions.Count);
         var metadata = TextPropsFactory.BuildMetadata(TextPropsFactory.StandardMask, request.Properties);
         metadata["parser"] = "msOFormsTabStrip";
         metadata["sizeSource"] = "tabStripExtraDataBlock";
         metadata["propMask"] = $"0x{PropMask:X8}";
-        metadata["listIndex"] = 0;
+        metadata["listIndex"] = listIndex;
         metadata["tabsAllocated"] = captions.Count + 1;
         metadata["tabData"] = captions.Count;
         metadata["tabCaptions"] = captions;
@@ -1151,6 +1153,17 @@ internal sealed class TabStripControlSchema : IGeneratedControlSchema
         metadata["visible"] = true;
         metadata["streamed"] = true;
         return metadata;
+    }
+
+    private static int GetListIndex(GeneratedControlRequest request, int tabCount)
+    {
+        var listIndex = MsFormsFactoryBinary.GetInt32(request.Properties, "listIndex") ?? 0;
+        if (listIndex < -1 || listIndex >= tabCount)
+        {
+            throw new CliException($"Generated TabStrip '{request.Name}' listIndex {listIndex} is outside the available tab range.");
+        }
+
+        return listIndex;
     }
 
     private static IReadOnlyList<string> GetTabCaptions(GeneratedControlRequest request)

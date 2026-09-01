@@ -557,31 +557,34 @@ internal static class RebuildPatchApplier
         return BuildAddedControls(templateControls, existingControls, additions, patchDir);
     }
 
-    private static IEnumerable<ControlInfo> BuildAddedControls(IReadOnlyList<ControlInfo> templateControls, IReadOnlyList<ControlInfo> existingControls, IReadOnlyList<AddControlPatch> additions, string? patchDir, Dictionary<string, Dictionary<string, JsonElement>>? patchedByName = null, Dictionary<string, LayoutPatch>? layoutByName = null)
+    private static IReadOnlyList<AdditionPlanEntry> BuildAdditionPlan(
+        IReadOnlyList<ControlInfo> templateControls,
+        IReadOnlyList<ControlInfo> existingControls,
+        IReadOnlyList<AddControlPatch> additions,
+        Dictionary<string, Dictionary<string, JsonElement>>? patchedByName)
     {
-        var names = existingControls.Select(c => c.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var maxId = templateControls.Concat(existingControls)
-            .Select(c => c.Properties is not null && TryGetInt(c.Properties, "siteId", out var id) ? id : 0)
-            .DefaultIfEmpty(0)
-            .Max();
+        var existingNames = existingControls
+            .Select(control => control.Name)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var entriesByName = new Dictionary<string, AdditionPlanEntry>(StringComparer.OrdinalIgnoreCase);
 
-        var result = new List<ControlInfo>();
         foreach (var add in additions)
         {
-            var name = add.Name!.Trim();
-            if (!names.Add(name))
+            var name = add.Name?.Trim();
+            if (string.IsNullOrWhiteSpace(name) || existingNames.Contains(name))
             {
-                // [WYSIWYG / Idempotencia] Si el control ya existe, lo omitimos del ciclo de adición
-                // estructural. El bucle principal de propiedades se encargará de actualizarlo.
                 continue;
             }
 
-            var hasTemplate = !string.IsNullOrWhiteSpace(add.FromTemplate);
-            var template = hasTemplate
-                ? templateControls.FirstOrDefault(c => c.Name.Equals(add.FromTemplate!, StringComparison.OrdinalIgnoreCase))
+            if (entriesByName.ContainsKey(name))
+            {
+                throw new CliException($"Add target '{name}' is requested more than once.");
+            }
+
+            var template = !string.IsNullOrWhiteSpace(add.FromTemplate)
+                ? templateControls.FirstOrDefault(control => control.Name.Equals(add.FromTemplate, StringComparison.OrdinalIgnoreCase))
                     ?? throw new CliException($"Add template '{add.FromTemplate}' does not exist.")
                 : null;
-
             var type = add.Type?.Trim();
             if (template is not null)
             {
@@ -596,7 +599,202 @@ internal static class RebuildPatchApplier
                 throw new CliException($"Add target '{name}' requires 'type' when no fromTemplate is supplied.");
             }
 
-            var parent = add.Parent is null ? template?.Parent : (string.IsNullOrWhiteSpace(add.Parent) ? null : add.Parent.Trim());
+            var parent = add.Parent is null
+                ? template?.Parent
+                : string.IsNullOrWhiteSpace(add.Parent)
+                    ? null
+                    : add.Parent.Trim();
+            var requestedTabIndex = GetRequestedTabIndex(add, name, patchedByName);
+            entriesByName[name] = new AdditionPlanEntry(add, name, type!, parent, template, requestedTabIndex);
+        }
+
+        var depthByName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var visiting = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var entry in entriesByName.Values)
+        {
+            GetDepth(entry);
+        }
+
+        return entriesByName.Values
+            .OrderBy(entry => depthByName[entry.Name])
+            .ThenBy(entry => entry.Parent ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(entry => entry.RequestedTabIndex ?? int.MaxValue)
+            .ThenBy(entry => entry.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        int GetDepth(AdditionPlanEntry entry)
+        {
+            if (depthByName.TryGetValue(entry.Name, out var cached))
+            {
+                return cached;
+            }
+
+            if (!visiting.Add(entry.Name))
+            {
+                throw new CliException($"Add graph contains a parent cycle involving '{entry.Name}'.");
+            }
+
+            var depth = 0;
+            if (!string.IsNullOrWhiteSpace(entry.Parent))
+            {
+                if (entriesByName.TryGetValue(entry.Parent, out var parentEntry))
+                {
+                    depth = checked(GetDepth(parentEntry) + 1);
+                }
+                else if (!existingNames.Contains(entry.Parent))
+                {
+                    throw new CliException($"Target parent '{entry.Parent}' does not exist.");
+                }
+            }
+
+            visiting.Remove(entry.Name);
+            depthByName[entry.Name] = depth;
+            return depth;
+        }
+    }
+
+    private static int? GetRequestedTabIndex(
+        AddControlPatch add,
+        string name,
+        Dictionary<string, Dictionary<string, JsonElement>>? patchedByName)
+    {
+        if (add.Properties is not null && add.Properties.TryGetValue("tabIndex", out var addTabIndex))
+        {
+            return RequireUInt16(name, "tabIndex", addTabIndex);
+        }
+
+        if (patchedByName is not null &&
+            patchedByName.TryGetValue(name, out var requestedProperties) &&
+            requestedProperties.TryGetValue("tabIndex", out var propertyTabIndex))
+        {
+            return RequireUInt16(name, "tabIndex", propertyTabIndex);
+        }
+
+        return null;
+    }
+
+    private sealed record AdditionPlanEntry(
+        AddControlPatch Patch,
+        string Name,
+        string Type,
+        string? Parent,
+        ControlInfo? Template,
+        int? RequestedTabIndex);
+
+    private static GeneratedPagePlan BuildGeneratedPagePlan(
+        AdditionPlanEntry entry,
+        int pageIndex,
+        int fallbackWidth,
+        int fallbackHeight,
+        string? patchDir,
+        Dictionary<string, Dictionary<string, JsonElement>>? patchedByName,
+        Dictionary<string, LayoutPatch>? layoutByName)
+    {
+        var props = entry.Template?.Properties is not null
+            ? new Dictionary<string, object?>(entry.Template.Properties, StringComparer.OrdinalIgnoreCase)
+            : new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+        if (patchedByName is not null && patchedByName.TryGetValue(entry.Name, out var requestedProperties))
+        {
+            foreach (var (propertyName, propertyValue) in requestedProperties)
+            {
+                ApplyPropertyToDictionary(entry.Name, entry.Type, props, propertyName, propertyValue, patchDir);
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(entry.Patch.Caption))
+        {
+            props["caption"] = entry.Patch.Caption;
+        }
+
+        if (!string.IsNullOrWhiteSpace(entry.Patch.Value))
+        {
+            props["value"] = entry.Patch.Value;
+        }
+
+        foreach (var (propertyName, propertyValue) in entry.Patch.Properties ?? new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase))
+        {
+            ApplyAddPropertyToDictionary(entry.Name, entry.Type, props, propertyName, propertyValue, patchDir);
+        }
+
+        var left = entry.Patch.Left ?? ToRawPoints(entry.Patch.LeftPt) ?? entry.Template?.Left ?? 0;
+        var top = entry.Patch.Top ?? ToRawPoints(entry.Patch.TopPt) ?? entry.Template?.Top ?? 0;
+        var rawWidth = entry.Patch.RawWidth ?? entry.Patch.Width ?? ToRawPoints(entry.Patch.WidthPt) ?? entry.Template?.RawWidth ?? fallbackWidth;
+        var rawHeight = entry.Patch.RawHeight ?? entry.Patch.Height ?? ToRawPoints(entry.Patch.HeightPt) ?? entry.Template?.RawHeight ?? fallbackHeight;
+        if (layoutByName is not null && layoutByName.TryGetValue(entry.Name, out var layout))
+        {
+            left = layout.Left ?? ToRawPoints(layout.LeftPt) ?? left;
+            top = layout.Top ?? ToRawPoints(layout.TopPt) ?? top;
+            rawWidth = layout.RawWidth ?? layout.Width ?? ToRawPoints(layout.WidthPt) ?? rawWidth;
+            rawHeight = layout.RawHeight ?? layout.Height ?? ToRawPoints(layout.HeightPt) ?? rawHeight;
+        }
+
+        var caption = TryGetString(props, "caption", out var requestedCaption) && !string.IsNullOrWhiteSpace(requestedCaption)
+            ? requestedCaption
+            : TryGetString(props, "tabCaption", out var templateCaption) && !string.IsNullOrWhiteSpace(templateCaption)
+                ? templateCaption
+            : entry.Name;
+        var tabIndex = entry.RequestedTabIndex ?? pageIndex;
+        props["tabCaption"] = caption;
+        props.Remove("caption");
+        props["tabIndex"] = tabIndex;
+
+        return new GeneratedPagePlan(entry, props, tabIndex, left, top, rawWidth, rawHeight, caption);
+    }
+
+    private sealed record GeneratedPagePlan(
+        AdditionPlanEntry Entry,
+        Dictionary<string, object?> Properties,
+        int TabIndex,
+        int Left,
+        int Top,
+        int Width,
+        int Height,
+        string Caption);
+
+    private static IEnumerable<ControlInfo> BuildAddedControls(IReadOnlyList<ControlInfo> templateControls, IReadOnlyList<ControlInfo> existingControls, IReadOnlyList<AddControlPatch> additions, string? patchDir, Dictionary<string, Dictionary<string, JsonElement>>? patchedByName = null, Dictionary<string, LayoutPatch>? layoutByName = null)
+    {
+        var additionPlan = BuildAdditionPlan(templateControls, existingControls, additions, patchedByName);
+        var explicitPagesByMultiPage = additionPlan
+            .Where(entry => entry.Type.Equals("Page", StringComparison.OrdinalIgnoreCase) &&
+                !string.IsNullOrWhiteSpace(entry.Parent))
+            .GroupBy(entry => entry.Parent!, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                group => group.Key,
+                group => (IReadOnlyList<AdditionPlanEntry>)group
+                    .OrderBy(entry => entry.RequestedTabIndex ?? int.MaxValue)
+                    .ThenBy(entry => entry.Name, StringComparer.OrdinalIgnoreCase)
+                    .ToList(),
+                StringComparer.OrdinalIgnoreCase);
+        var consumedExplicitPages = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var names = existingControls.Select(c => c.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var reservedNames = names
+            .Concat(additionPlan.Select(entry => entry.Name))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var maxId = templateControls.Concat(existingControls)
+            .Select(c => c.Properties is not null && TryGetInt(c.Properties, "siteId", out var id) ? id : 0)
+            .DefaultIfEmpty(0)
+            .Max();
+
+        var result = new List<ControlInfo>();
+        foreach (var planned in additionPlan)
+        {
+            if (consumedExplicitPages.Contains(planned.Name))
+            {
+                continue;
+            }
+
+            var add = planned.Patch;
+            var name = planned.Name;
+            if (!names.Add(name))
+            {
+                // [WYSIWYG / Idempotencia] Si el control ya existe, lo omitimos del ciclo de adición
+                // estructural. El bucle principal de propiedades se encargará de actualizarlo.
+                continue;
+            }
+
+            var template = planned.Template;
+            var type = planned.Type;
+            var parent = planned.Parent;
             var controlsForParent = existingControls.Concat(result).ToList();
             ControlInfo? parentControl = null;
             if (!string.IsNullOrWhiteSpace(parent))
@@ -605,7 +803,7 @@ internal static class RebuildPatchApplier
                     ?? throw new CliException($"Target parent '{parent}' does not exist.");
             }
 
-            var targetStoragePath = template is null && type!.Equals("Page", StringComparison.OrdinalIgnoreCase)
+            var targetStoragePath = type.Equals("Page", StringComparison.OrdinalIgnoreCase)
                 ? ResolveTargetMultiPageStoragePath(name, parentControl)
                 : ResolveTargetStoragePath(parent, controlsForParent);
             var targetStreamPath = $"{targetStoragePath}/f";
@@ -692,7 +890,7 @@ internal static class RebuildPatchApplier
                 rawHeight = layout.RawHeight ?? layout.Height ?? ToRawPoints(layout.HeightPt) ?? rawHeight;
             }
 
-            if (template is null && type.Equals("Page", StringComparison.OrdinalIgnoreCase))
+            if (type.Equals("Page", StringComparison.OrdinalIgnoreCase))
             {
                 if (parentControl is null || !parentControl.Type.Equals("MultiPage", StringComparison.OrdinalIgnoreCase))
                 {
@@ -700,6 +898,10 @@ internal static class RebuildPatchApplier
                 }
 
                 var pageIndex = NextMultiPagePageIndex(existingControls.Concat(result), parentControl.Name);
+                var selectedPageIndex = parentControl.Properties is not null &&
+                    TryGetInt(parentControl.Properties, "value", out var parentValue)
+                        ? parentValue
+                        : 0;
                 var generatedStoragePath = $"{targetStoragePath}/i{FormatStorageId(maxId)}";
                 rawWidth ??= parentControl.RawWidth ?? 0;
                 rawHeight ??= parentControl.RawHeight ?? 0;
@@ -710,15 +912,14 @@ internal static class RebuildPatchApplier
                     : name;
                 props["tabCaption"] = pageCaption;
                 props.Remove("caption");
-                props["tabIndex"] = pageIndex;
                 var generated = GeneratedStorageFactory.CreatePage(
                     name,
                     maxId,
-                    pageIndex,
+                    (int)props["tabIndex"]!,
                     rawWidth ?? 0,
                     rawHeight ?? 0,
                     generatedStoragePath,
-                    pageIndex == 0);
+                    BuildGeneratedPageSiteFlags(props, pageIndex == selectedPageIndex));
 
                 props["generatedFormSitePayload"] = generated.SitePayload;
                 props["siteDepth"] = 0;
@@ -727,7 +928,9 @@ internal static class RebuildPatchApplier
                 props["cbSite"] = generated.SitePayload.Length - 4;
                 props["parser"] = "msOFormsFormSiteData";
                 props["siteParser"] = "msOFormsOleSiteConcrete";
-                props["siteBitFlags"] = pageIndex == 0 ? "0x00040021" : "0x00040023";
+                props["siteBitFlags"] = $"0x{generated.SiteFlags:X8}";
+                props["siteBitFlagsRaw"] = unchecked((int)generated.SiteFlags);
+                props["visible"] = (generated.SiteFlags & (1u << 1)) != 0;
                 props["formControlParser"] = "msOFormsFormControl";
                 props["formPropMask"] = "0x0C000C48";
                 props["sizeSource"] = "formControlDisplayedSize";
@@ -773,20 +976,72 @@ internal static class RebuildPatchApplier
             else if (template is null && type.Equals("MultiPage", StringComparison.OrdinalIgnoreCase))
             {
                 var ownedStoragePath = $"{targetStoragePath}/i{FormatStorageId(maxId)}";
-                var pageNames = MsFormsFactoryBinary.GetStringList(props, "pageNames")?.ToArray()
-                    ?? [$"{name}Page1", $"{name}Page2"];
-                var pageCaptions = MsFormsFactoryBinary.GetStringList(props, "pageCaptions")?.ToArray()
-                    ?? pageNames.Select((_, index) => $"Page{index + 1}").ToArray();
-                if (pageNames.Length != pageCaptions.Length || pageNames.Length == 0)
+                var selectedPageIndex = TryGetInt(props, "value", out var requestedPageIndex)
+                    ? requestedPageIndex
+                    : 0;
+                var explicitPagePlans = explicitPagesByMultiPage.TryGetValue(name, out var requestedPages)
+                    ? requestedPages.Select((entry, index) => BuildGeneratedPagePlan(
+                        entry,
+                        index,
+                        rawWidth ?? 0,
+                        rawHeight ?? 0,
+                        patchDir,
+                        patchedByName,
+                        layoutByName)).ToList()
+                    : [];
+                List<GeneratedPageDefinition> pageDefinitions;
+                if (explicitPagePlans.Count > 0)
                 {
-                    throw new CliException($"Add target '{name}' has invalid pageNames/pageCaptions.");
-                }
-
-                foreach (var pageName in pageNames)
-                {
-                    if (!names.Add(pageName))
+                    pageDefinitions = explicitPagePlans
+                        .Select((page, index) => new GeneratedPageDefinition(
+                            page.Entry.Name,
+                            page.Caption,
+                            page.TabIndex,
+                            page.Left,
+                            page.Top,
+                            page.Width,
+                            page.Height,
+                            BuildGeneratedPageSiteFlags(page.Properties, index == selectedPageIndex)))
+                        .ToList();
+                    foreach (var page in explicitPagePlans)
                     {
-                        throw new CliException($"Add target '{name}' would create duplicate page '{pageName}'.");
+                        if (!names.Add(page.Entry.Name))
+                        {
+                            throw new CliException($"Add target '{name}' would create duplicate page '{page.Entry.Name}'.");
+                        }
+
+                        consumedExplicitPages.Add(page.Entry.Name);
+                    }
+                }
+                else
+                {
+                    var pageNames = MsFormsFactoryBinary.GetStringList(props, "pageNames")?.ToArray()
+                        ?? [$"{name}Page1", $"{name}Page2"];
+                    var pageCaptions = MsFormsFactoryBinary.GetStringList(props, "pageCaptions")?.ToArray()
+                        ?? pageNames.Select((_, index) => $"Page{index + 1}").ToArray();
+                    if (pageNames.Length != pageCaptions.Length || pageNames.Length == 0)
+                    {
+                        throw new CliException($"Add target '{name}' has invalid pageNames/pageCaptions.");
+                    }
+
+                    pageDefinitions = new List<GeneratedPageDefinition>(pageNames.Length);
+                    for (var i = 0; i < pageNames.Length; i++)
+                    {
+                        var pageName = pageNames[i];
+                        if (reservedNames.Contains(pageName) || !names.Add(pageName))
+                        {
+                            throw new CliException($"Add target '{name}' would create duplicate page '{pageName}'.");
+                        }
+
+                        pageDefinitions.Add(new GeneratedPageDefinition(
+                            pageName,
+                            pageCaptions[i],
+                            i,
+                            0,
+                            0,
+                            rawWidth ?? 0,
+                            rawHeight ?? 0,
+                            BuildGeneratedPageSiteFlags(props: null, i == selectedPageIndex)));
                     }
                 }
 
@@ -799,8 +1054,8 @@ internal static class RebuildPatchApplier
                     rawWidth ?? 0,
                     rawHeight ?? 0,
                     ownedStoragePath,
-                    pageNames,
-                    pageCaptions);
+                    pageDefinitions,
+                    selectedPageIndex);
 
                 props["generatedFormSitePayload"] = generated.SitePayload;
                 props.Remove("caption");
@@ -816,52 +1071,63 @@ internal static class RebuildPatchApplier
                 for (var i = 0; i < generated.Pages.Count; i++)
                 {
                     var page = generated.Pages[i];
-                    var pageProps = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
-                    {
-                        ["isAddedControl"] = true,
-                        ["storagePath"] = ownedStoragePath,
-                        ["streamPath"] = $"{ownedStoragePath}/f",
-                        ["name"] = page.Name,
-                        ["nameRaw"] = page.Name,
-                        ["siteName"] = page.Name,
-                        ["siteId"] = page.SiteId,
-                        ["id"] = page.SiteId,
-                        ["tabIndex"] = i,
-                        ["parser"] = "msOFormsFormSiteData",
-                        ["siteParser"] = "msOFormsOleSiteConcrete",
-                        ["siteBitFlags"] = i == 0 ? "0x00040021" : "0x00040023",
-                        ["formControlParser"] = "msOFormsFormControl",
-                        ["formPropMask"] = "0x0C000C48",
-                        ["sizeSource"] = "formControlDisplayedSize",
-                        ["displayedWidth"] = rawWidth ?? 0,
-                        ["displayedHeight"] = rawHeight ?? 0,
-                        ["logicalWidth"] = 0,
-                        ["logicalHeight"] = 0,
-                        ["siteDepth"] = 0,
-                        ["siteType"] = 1,
-                        ["siteLocalOffset"] = 0,
-                        ["generatedStoragePath"] = page.StoragePath,
-                        ["generatedStorageF"] = page.FStream,
-                        ["generatedStorageO"] = page.OStream,
-                        ["generatedStorageCompObjKind"] = "Page",
-                        ["generatedPageProperties"] = page.PageProperties,
-                        ["multiPageParent"] = name,
-                        ["multiPagePageIndex"] = i,
-                        ["multiPagePageId"] = page.SiteId,
-                        ["multiPageXStreamPath"] = $"{ownedStoragePath}/x"
-                    };
+                    var explicitPage = explicitPagePlans.FirstOrDefault(candidate =>
+                        candidate.Entry.Name.Equals(page.Name, StringComparison.OrdinalIgnoreCase));
+                    var pageProps = explicitPage is not null
+                        ? explicitPage.Properties
+                        : new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+                    pageProps["isAddedControl"] = true;
+                    pageProps["storagePath"] = ownedStoragePath;
+                    pageProps["streamPath"] = $"{ownedStoragePath}/f";
+                    pageProps["name"] = page.Name;
+                    pageProps["nameRaw"] = page.Name;
+                    pageProps["siteName"] = page.Name;
+                    pageProps["siteId"] = page.SiteId;
+                    pageProps["id"] = page.SiteId;
+                    pageProps["tabIndex"] = explicitPage?.TabIndex ?? i;
+                    pageProps["parser"] = "msOFormsFormSiteData";
+                    pageProps["siteParser"] = "msOFormsOleSiteConcrete";
+                    pageProps["siteBitFlags"] = $"0x{page.SiteFlags:X8}";
+                    pageProps["siteBitFlagsRaw"] = unchecked((int)page.SiteFlags);
+                    pageProps["visible"] = (page.SiteFlags & (1u << 1)) != 0;
+                    pageProps["formControlParser"] = "msOFormsFormControl";
+                    pageProps["formPropMask"] = "0x0C000C48";
+                    pageProps["sizeSource"] = "formControlDisplayedSize";
+                    pageProps["displayedWidth"] = explicitPage?.Width ?? rawWidth ?? 0;
+                    pageProps["displayedHeight"] = explicitPage?.Height ?? rawHeight ?? 0;
+                    pageProps["logicalWidth"] = 0;
+                    pageProps["logicalHeight"] = 0;
+                    pageProps["siteDepth"] = 0;
+                    pageProps["siteType"] = 1;
+                    pageProps["siteLocalOffset"] = 0;
+                    pageProps["cbSite"] = page.SitePayload.Length - 4;
+                    pageProps["generatedFormSitePayload"] = page.SitePayload;
+                    pageProps["generatedFormSiteAlreadyMaterialized"] = true;
+                    pageProps["generatedStoragePath"] = page.StoragePath;
+                    pageProps["generatedStorageF"] = page.FStream;
+                    pageProps["generatedStorageO"] = page.OStream;
+                    pageProps["generatedStorageCompObjKind"] = "Page";
+                    pageProps["generatedPageProperties"] = page.PageProperties;
+                    pageProps["multiPageParent"] = name;
+                    pageProps["multiPagePageIndex"] = i;
+                    pageProps["multiPagePageId"] = page.SiteId;
+                    pageProps["multiPageXStreamPath"] = $"{ownedStoragePath}/x";
 
+                    var pageLeft = explicitPage?.Left ?? 0;
+                    var pageTop = explicitPage?.Top ?? 0;
+                    var pageWidth = explicitPage?.Width ?? rawWidth;
+                    var pageHeight = explicitPage?.Height ?? rawHeight;
                     result.Add(new ControlInfo(
                         page.Name,
                         "Page",
-                        0,
-                        0,
-                        rawWidth,
-                        rawHeight,
-                        0,
-                        0,
-                        rawWidth is int pw ? FromRawPoints(pw) : null,
-                        rawHeight is int ph ? FromRawPoints(ph) : null,
+                        pageLeft,
+                        pageTop,
+                        pageWidth,
+                        pageHeight,
+                        FromRawPoints(pageLeft),
+                        FromRawPoints(pageTop),
+                        pageWidth is int pw ? FromRawPoints(pw) : null,
+                        pageHeight is int ph ? FromRawPoints(ph) : null,
                         pageProps,
                         name,
                         null,
@@ -875,7 +1141,7 @@ internal static class RebuildPatchApplier
                         null));
                 }
 
-                maxId += 1 + pageNames.Length;
+                maxId += 1 + pageDefinitions.Count;
             }
             else if (template is null)
             {
@@ -955,6 +1221,35 @@ internal static class RebuildPatchApplier
         }
 
         return result;
+    }
+
+    private static uint BuildGeneratedPageSiteFlags(Dictionary<string, object?>? props, bool isSelectedPage)
+    {
+        var flags = isSelectedPage ? 0x0004_0023u : 0x0004_0021u;
+        if (props is null)
+        {
+            return flags;
+        }
+
+        foreach (var (propertyName, bit) in new[]
+        {
+            ("tabStop", 0),
+            ("visible", 1),
+            ("default", 2),
+            ("cancel", 3)
+        })
+        {
+            var value = MsFormsFactoryBinary.GetBool(props, propertyName);
+            if (value is null)
+            {
+                continue;
+            }
+
+            var mask = 1u << bit;
+            flags = value.Value ? flags | mask : flags & ~mask;
+        }
+
+        return flags;
     }
 
     private static int NextTabIndexForParent(IEnumerable<ControlInfo> controls, string? parent)
@@ -1901,11 +2196,3 @@ internal static class RebuildPatchApplier
         return parsed;
     }
 }
-
-
-
-
-
-
-
-

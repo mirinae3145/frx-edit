@@ -98,45 +98,55 @@ internal static class GeneratedStorageFactory
         int width,
         int height,
         string storagePath,
-        IReadOnlyList<string> pageNames,
-        IReadOnlyList<string> pageCaptions)
+        IReadOnlyList<GeneratedPageDefinition> pageDefinitions,
+        int selectedPageIndex)
     {
-        if (pageNames.Count == 0 || pageNames.Count != pageCaptions.Count)
+        if (pageDefinitions.Count == 0)
         {
-            throw new CliException($"Cannot create MultiPage '{name}': pageNames and pageCaptions must have the same non-zero count.");
+            throw new CliException($"Cannot create MultiPage '{name}': at least one page definition is required.");
         }
 
         var tabStripId = multiPageId + 1;
-        var pageIds = Enumerable.Range(multiPageId + 2, pageNames.Count).ToArray();
+        var pageIds = Enumerable.Range(multiPageId + 2, pageDefinitions.Count).ToArray();
         var sitePayload = FormSiteFactory.BuildStorageOleSiteConcrete(name, multiPageId, tabIndex, 0x39, left, top, 0x0004_0023);
-        var tabStripPayload = BuildInternalTabStripPayload(pageNames, pageCaptions, width, height);
-        var pageSites = new List<byte[]>(pageNames.Count);
-        var pages = new List<GeneratedPageControlBytes>(pageNames.Count);
-        for (var i = 0; i < pageNames.Count; i++)
+        var tabStripPayload = BuildInternalTabStripPayload(
+            pageDefinitions.Select(page => page.Name).ToArray(),
+            pageDefinitions.Select(page => page.Caption).ToArray(),
+            width,
+            height,
+            selectedPageIndex);
+        var pageSites = new List<byte[]>(pageDefinitions.Count);
+        var pages = new List<GeneratedPageControlBytes>(pageDefinitions.Count);
+        for (var i = 0; i < pageDefinitions.Count; i++)
         {
+            var definition = pageDefinitions[i];
             var pageId = pageIds[i];
-            var pageName = pageNames[i];
+            var pageName = definition.Name;
             var pageStoragePath = $"{storagePath}/i{FormatStorageId(pageId)}";
-            pageSites.Add(FormSiteFactory.BuildStorageOleSiteConcrete(
+            var pageSite = FormSiteFactory.BuildStorageOleSiteConcrete(
                 pageName,
                 pageId,
-                i,
+                definition.TabIndex,
                 0x07,
-                0,
-                0,
-                i == 0 ? 0x0004_0021u : 0x0004_0023u));
+                definition.Left,
+                definition.Top,
+                definition.SiteFlags);
+            pageSites.Add(pageSite);
             pages.Add(new GeneratedPageControlBytes(
                 pageName,
                 pageId,
                 pageStoragePath,
-                BuildPageFormStream(width, height, pageId),
+                BuildPageFormStream(definition.Width, definition.Height, pageId),
                 Array.Empty<byte>(),
-                pageSites[^1],
-                BuildDefaultPageProperties()));
+                pageSite,
+                BuildDefaultPageProperties(),
+                definition.SiteFlags));
         }
 
         var internalTabSite = BuildInternalObjectSite(tabStripId, 0x12, tabStripPayload.Length);
 
+        // The complete page plan is now known, so the MultiPage's mutually dependent
+        // internal TabStrip, Page sites, and x metadata can be emitted consistently.
         var fStream = BuildMultiPageFormStream(width, height, multiPageId, [internalTabSite, .. pageSites]);
         var xStream = BuildMultiPageXStream(multiPageId, pageIds);
         var metadata = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
@@ -152,7 +162,7 @@ internal static class GeneratedStorageFactory
             ["displayedHeight"] = height,
             ["logicalWidth"] = 0,
             ["logicalHeight"] = 0,
-            ["multiPagePageCount"] = pageNames.Count,
+            ["multiPagePageCount"] = pageDefinitions.Count,
             ["multiPageId"] = tabStripId,
             ["multiPageXStreamPath"] = $"{storagePath}/x",
             ["generatedStoragePath"] = storagePath,
@@ -172,7 +182,7 @@ internal static class GeneratedStorageFactory
         int width,
         int height,
         string storagePath,
-        bool isFirstPage = false)
+        uint siteFlags)
     {
         var sitePayload = FormSiteFactory.BuildStorageOleSiteConcrete(
             name,
@@ -181,7 +191,7 @@ internal static class GeneratedStorageFactory
             0x07,
             0,
             0,
-            isFirstPage ? 0x0004_0021u : 0x0004_0023u);
+            siteFlags);
 
         return new GeneratedPageControlBytes(
             name,
@@ -190,7 +200,8 @@ internal static class GeneratedStorageFactory
             BuildPageFormStream(width, height, siteId),
             Array.Empty<byte>(),
             sitePayload,
-            BuildDefaultPageProperties());
+            BuildDefaultPageProperties(),
+            siteFlags);
     }
 
     private static byte[] BuildMultiPageFormStream(int width, int height, int nextAvailableId, IReadOnlyList<byte[]> sites) =>
@@ -303,7 +314,12 @@ internal static class GeneratedStorageFactory
     private static byte[] BuildDefaultMultiPageTail() =>
         Convert.FromHexString("00020C0019000000F08F0000FF010000");
 
-    private static byte[] BuildInternalTabStripPayload(IReadOnlyList<string> pageNames, IReadOnlyList<string> pageCaptions, int width, int height)
+    private static byte[] BuildInternalTabStripPayload(
+        IReadOnlyList<string> pageNames,
+        IReadOnlyList<string> pageCaptions,
+        int width,
+        int height,
+        int selectedPageIndex)
     {
         var request = new GeneratedControlRequest(
             "TabStrip",
@@ -319,7 +335,8 @@ internal static class GeneratedStorageFactory
             new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
             {
                 ["tabCaptions"] = pageCaptions.ToArray(),
-                ["tabNames"] = pageNames.ToArray()
+                ["tabNames"] = pageNames.ToArray(),
+                ["listIndex"] = selectedPageIndex
             });
         return new TabStripControlSchema().BuildObjectPayload(request);
     }
@@ -336,6 +353,16 @@ internal sealed record GeneratedMultiPageControlBytes(
     IReadOnlyDictionary<string, object?> Metadata,
     IReadOnlyList<GeneratedPageControlBytes> Pages);
 
+internal sealed record GeneratedPageDefinition(
+    string Name,
+    string Caption,
+    int TabIndex,
+    int Left,
+    int Top,
+    int Width,
+    int Height,
+    uint SiteFlags);
+
 internal sealed record GeneratedPageControlBytes(
     string Name,
     int SiteId,
@@ -343,4 +370,5 @@ internal sealed record GeneratedPageControlBytes(
     byte[] FStream,
     byte[] OStream,
     byte[] SitePayload,
-    byte[] PageProperties);
+    byte[] PageProperties,
+    uint SiteFlags);

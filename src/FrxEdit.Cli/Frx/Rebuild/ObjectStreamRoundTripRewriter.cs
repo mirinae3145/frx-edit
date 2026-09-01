@@ -5,11 +5,16 @@ internal static class ObjectStreamRoundTripRewriter
         LayoutInspection layout,
         ObjectStreamRewriteMode mode = ObjectStreamRewriteMode.RoundTrip)
     {
+        var hasGeneratedStorageStreams = LayoutHasGeneratedStorageStreams(layout);
+        if (mode == ObjectStreamRewriteMode.FormAndObjectPatch && hasGeneratedStorageStreams)
+        {
+            dump = dump with { Streams = MaterializeGeneratedStorageStreams(dump.Streams, layout) };
+        }
+
         var slicesByObjectStreamPath = BuildSlicesByObjectStreamPath(layout);
         var additionsByObjectStreamPath = BuildAdditionsByObjectStreamPath(layout);
         var removalsByObjectStreamPath = BuildRemovedByObjectStreamPath(layout);
         var hasFormSiteChanges = LayoutHasFormSiteChanges(layout);
-        var hasGeneratedStorageStreams = LayoutHasGeneratedStorageStreams(layout);
         var streamsByPath = dump.Streams
             .Where(stream => !string.IsNullOrWhiteSpace(stream.Path))
             .GroupBy(stream => stream.Path!, StringComparer.OrdinalIgnoreCase)
@@ -156,11 +161,6 @@ internal static class ObjectStreamRoundTripRewriter
             return stream;
         }).Where(stream => !IsUnderRemovedStorage(stream.Path, removedStoragePaths)).ToList();
 
-        if (mode == ObjectStreamRewriteMode.FormAndObjectPatch && hasGeneratedStorageStreams)
-        {
-            streams = AddGeneratedStorageStreams(streams, layout);
-        }
-
         return dump with { Streams = streams };
     }
 
@@ -173,7 +173,7 @@ internal static class ObjectStreamRoundTripRewriter
             TryGetString(control.Properties, "generatedStoragePath", out var path) &&
             !string.IsNullOrWhiteSpace(path));
 
-    private static List<StorageEntryDump> AddGeneratedStorageStreams(List<StorageEntryDump> streams, LayoutInspection layout)
+    private static List<StorageEntryDump> MaterializeGeneratedStorageStreams(IReadOnlyList<StorageEntryDump> streams, LayoutInspection layout)
     {
         var existingPaths = streams
             .Where(stream => !string.IsNullOrWhiteSpace(stream.Path))
@@ -338,6 +338,12 @@ internal static class ObjectStreamRoundTripRewriter
             return false;
         }
 
+        if (TryGetByteArray(multiPage.Properties, "generatedStorageX", out _))
+        {
+            // Generated MultiPages were emitted from the completed Page plan already.
+            return false;
+        }
+
         if (!TryGetInt(multiPage.Properties, "multiPagePageCount", out var originalPageCount))
         {
             return false;
@@ -350,9 +356,9 @@ internal static class ObjectStreamRoundTripRewriter
             .ThenBy(control => control.Name, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        if (pages.Count == originalPageCount)
+        if (!MultiPagePageIdentityChanged(layout, multiPage, pages, originalPageCount))
         {
-            // No page add/remove happened for this MultiPage. Keep the stream byte-for-byte as-is.
+            // The effective Page identities and ordering still match the serialized x graph.
             return false;
         }
 
@@ -420,6 +426,7 @@ internal static class ObjectStreamRoundTripRewriter
             (xStreamPath.Substring(0, xStreamPath.Length - 2) + "/o").Equals(oStream.Path, StringComparison.OrdinalIgnoreCase));
 
         if (multiPage?.Properties is null) return false;
+        if (TryGetByteArray(multiPage.Properties, "generatedStorageO", out _)) return false;
         if (!TryGetInt(multiPage.Properties, "multiPagePageCount", out var originalPageCount)) return false;
 
         var pages = layout.Controls
@@ -429,17 +436,19 @@ internal static class ObjectStreamRoundTripRewriter
             .ThenBy(control => control.Name, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        if (pages.Count == originalPageCount) return false;
-
         var parsed = ObjectStreamParser.TryReadTabStrip(oStream);
         if (parsed == null)
             throw new CliException($"Cannot rewrite MultiPage TabStrip '{oStream.Path}': parser failed.");
 
         var props = parsed.Properties;
+        if (!MultiPageTabStripChanged(layout, multiPage, pages, originalPageCount, props))
+        {
+            return false;
+        }
 
         var captionsBytes = SerializeArrayString(pages, props, "tabCaptions", GetPageCaption);
         var tooltipsBytes = SerializeArrayString(pages, props, "tabTooltips", p => "");
-        var namesBytes = SerializeArrayString(pages, props, "tabNames", p => p.Name);
+        var namesBytes = SerializeArrayString(pages, props, "tabNames", p => p.Name, alwaysUseFallback: true);
         var tagsBytes = SerializeArrayString(pages, props, "tabTags", p => "");
         var acceleratorsBytes = SerializeArrayString(pages, props, "tabAccelerators", p => "");
 
@@ -462,6 +471,22 @@ internal static class ObjectStreamRoundTripRewriter
         }
 
         var dataBlock = oStream.Data.AsSpan(0, tabStripDataBlockEnd).ToArray();
+
+        if (TryGetInt(multiPage.Properties, "value", out var selectedPageIndex))
+        {
+            if (selectedPageIndex < -1 || selectedPageIndex >= pages.Count)
+            {
+                throw new CliException($"Cannot rewrite MultiPage TabStrip '{oStream.Path}': selected Page index {selectedPageIndex} is outside the effective Page range.");
+            }
+
+            if (!TryGetInt(props, "listIndexLocalOffset", out var listIndexOffset) ||
+                listIndexOffset < 0 || listIndexOffset + 4 > dataBlock.Length)
+            {
+                throw new CliException($"Cannot rewrite MultiPage TabStrip '{oStream.Path}': missing or invalid listIndexLocalOffset.");
+            }
+
+            BinaryPrimitives.WriteInt32LittleEndian(dataBlock.AsSpan(listIndexOffset, 4), selectedPageIndex);
+        }
 
         if (TryGetInt(props, "itemsSizeLocalOffset", out var itemsSizeOffset)) BinaryPrimitives.WriteUInt32LittleEndian(dataBlock.AsSpan(itemsSizeOffset, 4), (uint)captionsBytes.Length);
         if (TryGetInt(props, "tipStringsSizeLocalOffset", out var tipStringsSizeOffset)) BinaryPrimitives.WriteUInt32LittleEndian(dataBlock.AsSpan(tipStringsSizeOffset, 4), (uint)tooltipsBytes.Length);
@@ -502,7 +527,9 @@ internal static class ObjectStreamRoundTripRewriter
         foreach (var page in pages)
         {
             var flag = defaultFlag;
-            if (page.Properties is not null && TryGetInt(page.Properties, "multiPagePageIndex", out var originalIdx))
+            if (page.Properties is not null &&
+                !IsAddedControl(page.Properties) &&
+                TryGetInt(page.Properties, "multiPagePageIndex", out var originalIdx))
             {
                 if (TryGetObjectList(props, "tabFlags", out var flags) && originalIdx < flags.Count)
                 {
@@ -524,7 +551,12 @@ internal static class ObjectStreamRoundTripRewriter
         return true;
     }
 
-    private static byte[] SerializeArrayString(IReadOnlyList<ControlInfo> pages, Dictionary<string, object?> tabStripProps, string propertyName, Func<ControlInfo, string> fallback)
+    private static byte[] SerializeArrayString(
+        IReadOnlyList<ControlInfo> pages,
+        Dictionary<string, object?> tabStripProps,
+        string propertyName,
+        Func<ControlInfo, string> fallback,
+        bool alwaysUseFallback = false)
     {
         var entries = new List<Dictionary<string, object?>>();
         if (TryGetObjectList(tabStripProps, propertyName + "Entries", out var originalEntries))
@@ -540,7 +572,15 @@ internal static class ObjectStreamRoundTripRewriter
             string value = fallback(page);
             bool compressed = true;
 
-            if (page.Properties is not null && TryGetInt(page.Properties, "multiPagePageIndex", out var idx) && idx >= 0 && idx < entries.Count)
+            var hasExplicitCaption = propertyName.Equals("tabCaptions", StringComparison.OrdinalIgnoreCase) &&
+                page.Properties is not null &&
+                (page.Properties.ContainsKey("caption") || page.Properties.ContainsKey("tabCaption"));
+            if (!alwaysUseFallback &&
+                !hasExplicitCaption &&
+                page.Properties is not null &&
+                !IsAddedControl(page.Properties) &&
+                TryGetInt(page.Properties, "multiPagePageIndex", out var idx) &&
+                idx >= 0 && idx < entries.Count)
             {
                 if (TryGetString(entries[idx], "value", out var originalValue)) value = originalValue;
                 if (TryGetBool(entries[idx], "compressed", out var originalComp)) compressed = originalComp;
@@ -565,8 +605,74 @@ internal static class ObjectStreamRoundTripRewriter
         return stream.ToArray();
     }
 
+    private static bool MultiPagePageIdentityChanged(
+        LayoutInspection layout,
+        ControlInfo multiPage,
+        IReadOnlyList<ControlInfo> pages,
+        int originalPageCount)
+    {
+        if (multiPage.Properties is not null &&
+            TryGetUInt32List(multiPage.Properties, "multiPagePageIds", out var originalPageIds))
+        {
+            var plannedPageIds = pages.Select(GetPageId).ToList();
+            return !originalPageIds.SequenceEqual(plannedPageIds);
+        }
+
+        return pages.Count != originalPageCount ||
+            pages.Any(page => page.Properties is not null && IsAddedControl(page.Properties)) ||
+            (layout.RemovedControls?.Any(page =>
+                page.Type.Equals("Page", StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(page.Parent, multiPage.Name, StringComparison.OrdinalIgnoreCase)) ?? false);
+    }
+
+    private static bool MultiPageTabStripChanged(
+        LayoutInspection layout,
+        ControlInfo multiPage,
+        IReadOnlyList<ControlInfo> pages,
+        int originalPageCount,
+        Dictionary<string, object?> tabStripProperties)
+    {
+        if (MultiPagePageIdentityChanged(layout, multiPage, pages, originalPageCount))
+        {
+            return true;
+        }
+
+        if (TryGetStringList(tabStripProperties, "tabNames", out var originalNames) &&
+            !originalNames.SequenceEqual(pages.Select(page => page.Name), StringComparer.Ordinal))
+        {
+            return true;
+        }
+
+        if (TryGetStringList(tabStripProperties, "tabCaptions", out var originalCaptions))
+        {
+            for (var i = 0; i < pages.Count && i < originalCaptions.Count; i++)
+            {
+                var pageProperties = pages[i].Properties;
+                if (pageProperties is not null &&
+                    (pageProperties.ContainsKey("caption") || pageProperties.ContainsKey("tabCaption")) &&
+                    !originalCaptions[i].Equals(GetPageCaption(pages[i]), StringComparison.Ordinal))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return TryGetInt(multiPage.Properties!, "value", out var selectedPageIndex) &&
+            TryGetInt(tabStripProperties, "listIndex", out var originalSelectedPageIndex) &&
+            selectedPageIndex != originalSelectedPageIndex;
+    }
+
     private static (int Start, int Length) TryGetFirstPagePropertiesSlice(ControlInfo multiPage, IReadOnlyList<ControlInfo> pages, byte[] xStream)
     {
+        if (multiPage.Properties is not null && TryGetObjectList(multiPage.Properties, "pageProperties", out var pageProperties) && pageProperties.Count > 0)
+        {
+            var first = pageProperties[0];
+            if (TryGetInt(first, "localOffset", out var offset) && TryGetInt(first, "cbPage", out var cbPage))
+            {
+                return CheckedSlice(offset, checked(4 + cbPage), xStream.Length, $"{multiPage.Name}.PageProperties[0]");
+            }
+        }
+
         var firstPageProperties = pages.Count > 0 ? pages[0].Properties : null;
         if (firstPageProperties is not null && TryGetInt(firstPageProperties, "pagePropertiesLocalOffset", out var firstPageOffset))
         {
@@ -576,15 +682,6 @@ internal static class ObjectStreamRoundTripRewriter
             }
 
             return (0, firstPageOffset);
-        }
-
-        if (multiPage.Properties is not null && TryGetObjectList(multiPage.Properties, "pageProperties", out var pageProperties) && pageProperties.Count > 0)
-        {
-            var first = pageProperties[0];
-            if (TryGetInt(first, "localOffset", out var offset) && TryGetInt(first, "cbPage", out var cbPage))
-            {
-                return CheckedSlice(offset, checked(4 + cbPage), xStream.Length, $"{multiPage.Name}.PageProperties[0]");
-            }
         }
 
         throw new CliException($"Cannot rebuild MultiPage x stream for '{multiPage.Name}': missing ignored PageProperties[0] metadata.");
@@ -705,12 +802,87 @@ internal static class ObjectStreamRoundTripRewriter
         return false;
     }
 
+    private static bool TryGetUInt32List(Dictionary<string, object?> properties, string name, out List<uint> values)
+    {
+        values = [];
+        if (!properties.TryGetValue(name, out var raw) || raw is null)
+        {
+            return false;
+        }
+
+        if (raw is IEnumerable<uint> unsignedValues)
+        {
+            values = unsignedValues.ToList();
+            return true;
+        }
+
+        if (raw is IEnumerable<int> signedValues)
+        {
+            values = signedValues.Select(value => checked((uint)value)).ToList();
+            return true;
+        }
+
+        if (raw is JsonElement { ValueKind: JsonValueKind.Array } array)
+        {
+            foreach (var element in array.EnumerateArray())
+            {
+                if (!element.TryGetUInt32(out var value))
+                {
+                    values = [];
+                    return false;
+                }
+
+                values.Add(value);
+            }
+
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryGetStringList(Dictionary<string, object?> properties, string name, out List<string> values)
+    {
+        values = [];
+        if (!properties.TryGetValue(name, out var raw) || raw is null)
+        {
+            return false;
+        }
+
+        if (raw is IEnumerable<string> strings)
+        {
+            values = strings.ToList();
+            return true;
+        }
+
+        if (raw is JsonElement { ValueKind: JsonValueKind.Array } array)
+        {
+            foreach (var element in array.EnumerateArray())
+            {
+                if (element.ValueKind != JsonValueKind.String)
+                {
+                    values = [];
+                    return false;
+                }
+
+                values.Add(element.GetString() ?? string.Empty);
+            }
+
+            return true;
+        }
+
+        return false;
+    }
+
     private static Dictionary<string, List<ControlInfo>> BuildControlsByFormStreamPath(LayoutInspection layout)
     {
         var result = new Dictionary<string, List<ControlInfo>>(StringComparer.OrdinalIgnoreCase);
         foreach (var control in layout.Controls)
         {
-            if (control.Properties is null || !TryGetString(control.Properties, "streamPath", out var streamPath) || string.IsNullOrWhiteSpace(streamPath))
+            if (control.Properties is null ||
+                IsGeneratedFormSiteAlreadyMaterialized(control.Properties) ||
+                !TryGetString(control.Properties, "streamPath", out var streamPath) ||
+                string.IsNullOrWhiteSpace(streamPath))
             {
                 continue;
             }
@@ -1460,7 +1632,7 @@ internal static class ObjectStreamRoundTripRewriter
         foreach (var control in controls)
         {
             var props = control.Properties;
-            if (props is null || !IsAddedControl(props))
+            if (props is null || !IsAddedControl(props) || IsGeneratedFormSiteAlreadyMaterialized(props))
             {
                 continue;
             }
@@ -1976,6 +2148,9 @@ internal static class ObjectStreamRoundTripRewriter
 
     private static bool IsAddedControl(Dictionary<string, object?> props) =>
         TryGetBool(props, "isAddedControl", out var isAdded) && isAdded;
+
+    private static bool IsGeneratedFormSiteAlreadyMaterialized(Dictionary<string, object?> props) =>
+        TryGetBool(props, "generatedFormSiteAlreadyMaterialized", out var isMaterialized) && isMaterialized;
 
     private static bool LayoutHasObjectPayloads(LayoutInspection layout) =>
         layout.Controls.Any(control => control.Properties is not null &&
