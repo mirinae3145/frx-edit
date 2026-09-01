@@ -227,6 +227,7 @@ internal sealed class FrxEditApp(TextWriter stdout, TextWriter stderr)
             var patch = JsonSerializer.Deserialize<PatchDocument>(File.ReadAllText(Path.GetFullPath(patchPath)), JsonOptions)
                 ?? throw new CliException("Patch file is empty.");
             var project = UserFormProject.Load(outFrmPath);
+            patch.Normalize(project.FormName);
             var source = FrxBinary.Read(project.FrxPath);
             var sourceLayout = source.Inspect(project.KnownControlNames, project.ControlScopes, ParserMode.Strict, project.FormProperties);
             PatchValidator.Validate(patch, sourceLayout.Controls, formName: project.FormName);
