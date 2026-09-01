@@ -78,7 +78,14 @@ internal sealed class FrxEditApp(TextWriter stdout, TextWriter stderr)
         var frmPath = Path.GetFullPath(parsed.Positionals[0]);
         var project = UserFormProject.Load(frmPath);
         var parserMode = parsed.GetParserModeOption("mode", ParserMode.Tolerant);
-        var layout = FrxBinary.Read(project.FrxPath).Inspect(project.KnownControlNames, project.ControlScopes, parserMode, project.FormProperties);
+        var auditOut = parsed.GetOption("reader-audit-out");
+        var semanticAudit = auditOut is null ? null : new SemanticAuditCollector(project.FormName);
+        var layout = FrxBinary.Read(project.FrxPath).Inspect(
+            project.KnownControlNames,
+            project.ControlScopes,
+            parserMode,
+            project.FormProperties,
+            semanticAudit);
         var rawDocument = new LayoutDocument(
             project.FormName,
             Path.GetFileName(project.FrxPath),
@@ -86,10 +93,17 @@ internal sealed class FrxEditApp(TextWriter stdout, TextWriter stderr)
             layout.Controls,
             layout.FrxFormControl,
             layout.ParserValidation);
+        PatchDocument? auditPatch = null;
+        var auditTemplateKind = "template";
         if (parsed.GetOption("as-patch") is not null || parsed.GetOption("as-template") is not null)
         {
             var isTemplate = parsed.GetOption("as-template") is not null;
-            var patchDocument = FrxEdit.Cli.MsForms.Model.PatchDocumentGenerator.FromRaw(layout, project.FormName, asTemplate: isTemplate);
+            auditTemplateKind = isTemplate ? "template" : "patch";
+            var patchDocument = FrxEdit.Cli.MsForms.Model.PatchDocumentGenerator.FromRaw(
+                layout,
+                project.FormName,
+                asTemplate: isTemplate,
+                semanticAudit);
             
             var outPath = parsed.GetOption("out");
             if (outPath is not null)
@@ -104,16 +118,38 @@ internal sealed class FrxEditApp(TextWriter stdout, TextWriter stderr)
             }
             
             WriteJson(outPath, patchDocument);
+            auditPatch = patchDocument;
         }
         else
         {
             var humanDocument = HumanLayoutDocument.FromRaw(rawDocument);
             WriteJson(parsed.GetOption("out"), humanDocument);
+            if (semanticAudit is not null)
+            {
+                auditTemplateKind = "template (audit-only; inline assets)";
+                auditPatch = FrxEdit.Cli.MsForms.Model.PatchDocumentGenerator.FromRaw(
+                    layout,
+                    project.FormName,
+                    asTemplate: true,
+                    semanticAudit);
+            }
         }
 
         if (parsed.GetOption("raw-out") is { } rawOut)
         {
             WriteJson(rawOut, rawDocument);
+        }
+
+        if (auditOut is not null && semanticAudit is not null && auditPatch is not null)
+        {
+            WriteJson(
+                auditOut,
+                semanticAudit.Build(
+                    Path.GetFileName(project.FrxPath),
+                    parserMode,
+                    auditTemplateKind,
+                    layout,
+                    auditPatch));
         }
 
         return 0;
@@ -133,18 +169,38 @@ internal sealed class FrxEditApp(TextWriter stdout, TextWriter stderr)
         var streamMode = streamModeStr is not null 
             ? ParseRebuildStreamMode(streamModeStr) 
             : RebuildStreamMode.FormAndObjectPatch;
+        var writerAuditOut = parsed.GetOption("writer-audit-out");
 
         var patch = patchPath is not null
             ? JsonSerializer.Deserialize<PatchDocument>(File.ReadAllText(patchPath), JsonOptions)
                 ?? throw new CliException("Patch file is empty.")
             : null;
+        if (writerAuditOut is not null && patchPath is null)
+        {
+            throw new CliException("Option '--writer-audit-out' requires a patch file.");
+        }
         if (patch is not null && streamMode is not (RebuildStreamMode.ObjectStreamPatchProperties or RebuildStreamMode.FormAndObjectPatch))
         {
             throw new CliException("Option '--patch' requires '--stream-mode object-patch' or '--stream-mode full-patch'.");
         }
 
         var project = UserFormProject.Load(frmPath);
+        var auditPatchDir = patchPath is null ? null : Path.GetDirectoryName(patchPath);
+        var applyPatchDir = parsed.GetOption("patch") is not null
+            ? Path.GetDirectoryName(Path.GetFullPath(parsed.GetOption("patch")!))
+            : null;
+        var writerAudit = writerAuditOut is null || patchPath is null
+            ? null
+            : new WriterProvenanceAuditCollector("build", project.FormName, patchPath, auditPatchDir);
+        if (patch is not null)
+        {
+            writerAudit?.CapturePatch("J", patch);
+        }
         patch?.Normalize(project.FormName);
+        if (patch is not null)
+        {
+            writerAudit?.CapturePatch("N", patch);
+        }
         var source = FrxBinary.Read(project.FrxPath);
 
         // Validate the source first. This keeps the rebuilder deliberately conservative:
@@ -158,13 +214,15 @@ internal sealed class FrxEditApp(TextWriter stdout, TextWriter stderr)
 
         var targetLayout = patch is null
             ? sourceLayout
-            : RebuildPatchApplier.ApplyObjectPropertyPatch(sourceLayout, patch, allowFormSitePatch: streamMode == RebuildStreamMode.FormAndObjectPatch, formName: project.FormName, patchDir: parsed.GetOption("patch") is not null ? Path.GetDirectoryName(Path.GetFullPath(parsed.GetOption("patch")!)) : null);
+            : RebuildPatchApplier.ApplyObjectPropertyPatch(sourceLayout, patch, allowFormSitePatch: streamMode == RebuildStreamMode.FormAndObjectPatch, formName: project.FormName, patchDir: applyPatchDir, writerAudit: writerAudit);
+        writerAudit?.CaptureLayout("T", targetLayout);
         if (patch is not null)
         {
             VbaCodeGenerator.Validate(patch.Code, targetLayout.Controls);
         }
 
-        var rebuiltBytes = FrxRebuilder.RebuildContainer(source, targetLayout, streamMode);
+        var rebuiltBytes = FrxRebuilder.RebuildContainer(source, targetLayout, streamMode, writerAudit);
+        writerAudit?.CaptureBinary(rebuiltBytes, source.OleOffset);
 
         var outFrxPath = Path.ChangeExtension(outFrmPath, ".frx");
         Directory.CreateDirectory(Path.GetDirectoryName(outFrmPath)!);
@@ -182,6 +240,7 @@ internal sealed class FrxEditApp(TextWriter stdout, TextWriter stderr)
         var rebuiltProject = UserFormProject.Load(outFrmPath);
         var rebuilt = FrxBinary.Read(rebuiltProject.FrxPath);
         var rebuiltLayout = rebuilt.Inspect(rebuiltProject.KnownControlNames, rebuiltProject.ControlScopes, parserMode, rebuiltProject.FormProperties);
+        writerAudit?.CaptureLayout("C", rebuiltLayout);
         var comparison = RebuildComparison.From(targetLayout, rebuiltLayout) with
         {
             InputControlCount = sourceLayout.Controls.Count,
@@ -198,6 +257,10 @@ internal sealed class FrxEditApp(TextWriter stdout, TextWriter stderr)
         {
             WriteJson(reportOut, comparison);
         }
+        if (writerAuditOut is not null && writerAudit is not null)
+        {
+            WriteJson(writerAuditOut, writerAudit.Build());
+        }
 
         return 0;
     }
@@ -211,6 +274,7 @@ internal sealed class FrxEditApp(TextWriter stdout, TextWriter stderr)
         var caption = parsed.GetOption("caption") ?? formName;
         var widthPt = GetDoubleOption(parsed, "widthPt", 240);
         var heightPt = GetDoubleOption(parsed, "heightPt", 180);
+        var writerAuditOut = parsed.GetOption("writer-audit-out");
         if (widthPt <= 0 || heightPt <= 0)
         {
             throw new CliException("Options '--widthPt' and '--heightPt' must be greater than zero.");
@@ -224,25 +288,73 @@ internal sealed class FrxEditApp(TextWriter stdout, TextWriter stderr)
 
         if (parsed.GetOption("patch") is { } patchPath)
         {
-            var patch = JsonSerializer.Deserialize<PatchDocument>(File.ReadAllText(Path.GetFullPath(patchPath)), JsonOptions)
+            patchPath = Path.GetFullPath(patchPath);
+            var patch = JsonSerializer.Deserialize<PatchDocument>(File.ReadAllText(patchPath), JsonOptions)
                 ?? throw new CliException("Patch file is empty.");
             var project = UserFormProject.Load(outFrmPath);
+            var patchDir = Path.GetDirectoryName(patchPath);
+            var writerAudit = writerAuditOut is null
+                ? null
+                : new WriterProvenanceAuditCollector("create", project.FormName, patchPath, patchDir);
+            writerAudit?.CapturePatch("J", patch);
             patch.Normalize(project.FormName);
-            var source = FrxBinary.Read(project.FrxPath);
-            var sourceLayout = source.Inspect(project.KnownControlNames, project.ControlScopes, ParserMode.Strict, project.FormProperties);
-            PatchValidator.Validate(patch, sourceLayout.Controls, formName: project.FormName);
-            RebuildPatchApplier.ValidateObjectPatch(patch, allowFormSitePatch: true, formName: project.FormName);
-            var targetLayout = RebuildPatchApplier.ApplyObjectPropertyPatch(sourceLayout, patch, allowFormSitePatch: true, formName: project.FormName, patchDir: Path.GetDirectoryName(Path.GetFullPath(patchPath)));
-            VbaCodeGenerator.Validate(patch.Code, targetLayout.Controls);
-            var rebuiltBytes = FrxRebuilder.RebuildContainer(source, targetLayout, RebuildStreamMode.FormAndObjectPatch);
-            File.WriteAllBytes(outFrxPath, rebuiltBytes);
+            writerAudit?.CapturePatch("N", patch);
+            var currentBoundary = "N -> T";
+            try
+            {
+                var source = FrxBinary.Read(project.FrxPath);
+                var sourceLayout = source.Inspect(project.KnownControlNames, project.ControlScopes, ParserMode.Strict, project.FormProperties);
+                PatchValidator.Validate(patch, sourceLayout.Controls, formName: project.FormName);
+                RebuildPatchApplier.ValidateObjectPatch(patch, allowFormSitePatch: true, formName: project.FormName);
+                var targetLayout = RebuildPatchApplier.ApplyObjectPropertyPatch(sourceLayout, patch, allowFormSitePatch: true, formName: project.FormName, patchDir: patchDir, writerAudit: writerAudit);
+                writerAudit?.CaptureLayout("T", targetLayout);
+                VbaCodeGenerator.Validate(patch.Code, targetLayout.Controls);
 
-            var updatedFrm = VbaRenamer.Apply(project.FrmText, patch.Renames);
-            updatedFrm = UserFormProject.ReplaceOleObjectBlob(updatedFrm, Path.GetFileName(outFrxPath));
-            updatedFrm = ApplyVbaFile(updatedFrm, patchPath, outFrmPath, project.Encoding);
-            updatedFrm = VbaCodeGenerator.Apply(updatedFrm, patch.Code);
-            updatedFrm = UserFormProject.SynchronizeFormProperties(updatedFrm, targetLayout.FrxFormControl);
-            File.WriteAllText(outFrmPath, updatedFrm, project.Encoding);
+                currentBoundary = "T -> B";
+                var rebuiltBytes = FrxRebuilder.RebuildContainer(source, targetLayout, RebuildStreamMode.FormAndObjectPatch, writerAudit);
+                writerAudit?.CaptureBinary(rebuiltBytes, source.OleOffset);
+                File.WriteAllBytes(outFrxPath, rebuiltBytes);
+
+                var updatedFrm = VbaRenamer.Apply(project.FrmText, patch.Renames);
+                updatedFrm = UserFormProject.ReplaceOleObjectBlob(updatedFrm, Path.GetFileName(outFrxPath));
+                updatedFrm = ApplyVbaFile(updatedFrm, patchPath, outFrmPath, project.Encoding);
+                updatedFrm = VbaCodeGenerator.Apply(updatedFrm, patch.Code);
+                updatedFrm = UserFormProject.SynchronizeFormProperties(updatedFrm, targetLayout.FrxFormControl);
+                File.WriteAllText(outFrmPath, updatedFrm, project.Encoding);
+
+                currentBoundary = "B -> C";
+                if (writerAuditOut is not null && writerAudit is not null)
+                {
+                    var auditProject = UserFormProject.Load(outFrmPath);
+                    var auditLayout = FrxBinary.Read(auditProject.FrxPath).Inspect(
+                        auditProject.KnownControlNames,
+                        auditProject.ControlScopes,
+                        ParserMode.Strict,
+                        auditProject.FormProperties);
+                    writerAudit.CaptureLayout("C", auditLayout);
+                    WriteJson(writerAuditOut, writerAudit.Build());
+                }
+            }
+            catch (Exception ex)
+            {
+                if (writerAuditOut is not null && writerAudit is not null)
+                {
+                    writerAudit.RecordFailure(
+                        currentBoundary,
+                        currentBoundary == "N -> T"
+                            ? "RebuildPatchApplier.ApplyObjectPropertyPatch"
+                            : currentBoundary == "T -> B"
+                                ? "FrxRebuilder.RebuildContainer / ObjectStreamRoundTripRewriter"
+                                : "FrxBinary.Inspect strict re-read",
+                        ex);
+                    WriteJson(writerAuditOut, writerAudit.Build());
+                }
+                throw;
+            }
+        }
+        else if (writerAuditOut is not null)
+        {
+            throw new CliException("Option '--writer-audit-out' requires '--patch'.");
         }
 
         var validationProject = UserFormProject.Load(outFrmPath);
@@ -670,14 +782,16 @@ internal sealed class FrxEditApp(TextWriter stdout, TextWriter stderr)
         stdout.WriteLine("frxedit watch <UserForm.frm> [<patch.json>] [--out <UserForm.patched.frm>]");
         stdout.WriteLine("  Automatically rebuilds the UserForm when the JSON, VBA, or image assets change.\n");
 
-        stdout.WriteLine("frxedit build <UserForm.frm> [<patch.json>] --out <UserForm.rebuilt.frm> [--mode strict] [--stream-mode full-patch]");
+        stdout.WriteLine("frxedit build <UserForm.frm> [<patch.json>] --out <UserForm.rebuilt.frm> [--mode strict] [--stream-mode full-patch] [--writer-audit-out audit.json]");
         stdout.WriteLine("  Regenerates the OLE/CFB container. Merges patch structural changes, code and properties seamlessly.\n");
 
-        stdout.WriteLine("frxedit create <UserFormNew.frm> --name UserFormNew [--caption Demo] [--widthPt 340] [--heightPt 240] [--patch form.patch.json]\n");
+        stdout.WriteLine("frxedit create <UserFormNew.frm> --name UserFormNew [--caption Demo] [--widthPt 340] [--heightPt 240] [--patch form.patch.json] [--writer-audit-out audit.json]\n");
 
         stdout.WriteLine("--- DIAGNOSTIC & DEBUG COMMANDS ---");
         stdout.WriteLine("frxedit inspect <UserForm.frm> --out layout.json --raw-out layout.raw.json");
         stdout.WriteLine("  --raw-out         Dumps raw property identifiers and streams for deep diagnostic analysis.\n");
+        stdout.WriteLine("  --writer-audit-out  Writes an opt-in J/N/T/B/C reconstruction provenance audit as JSON.\n");
+        stdout.WriteLine("  --reader-audit-out       Writes an opt-in P/R/J semantic provenance audit as JSON without changing normal outputs.\n");
 
         stdout.WriteLine("frxedit validate <UserForm.frm> [--mode tolerant|strict|legacy]");
         stdout.WriteLine("frxedit dump-records <UserForm.frm> [--around TextBox3] [--before 4] [--after 8] [--out records.json]");
@@ -685,4 +799,3 @@ internal sealed class FrxEditApp(TextWriter stdout, TextWriter stderr)
         stdout.WriteLine("frxedit dump-stream-records <UserForm.frm> [--out stream-records.json]");
     }
 }
-

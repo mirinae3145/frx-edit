@@ -39,7 +39,15 @@ frxedit inspect UserForm1.frm --as-patch --out layout.json
 
 # (Optional) Extract embedded images as base64 strings or files
 frxedit inspect UserForm1.frm --as-patch --extract-images --out layout.json
+
+# (Diagnostic) Record parser-to-raw-to-template provenance without changing normal outputs
+frxedit inspect UserForm1.frm --mode strict --as-template --out layout.json \
+  --raw-out layout.raw.json --reader-audit-out layout.audit.json
 ```
+
+`--reader-audit-out` is opt-in and writes a machine-readable P/R/J audit: parser observations
+(P), the raw inspection model (R), and the generated patch/template representation (J).
+Large binary or text values are represented by length and SHA-256 metadata in the audit.
 
 ### 2. Build (Patch and Rebuild Binary)
 Apply a JSON patch over an existing layout to modify colors, sizes, behavior, or even inject new controls, compiling everything back into a perfect `.frx` binary.
@@ -59,6 +67,16 @@ Launch a daemon that monitors a JSON patch file for changes and automatically re
 # Watch the layout.json file for changes and rebuild automatically
 frxedit watch UserForm1.frm layout.json --out UserForm1_rebuilt.frm --stream-mode full-patch
 ```
+
+### Reconstruction provenance diagnostics
+
+`build` and `create --patch` can emit a separate, machine-readable reconstruction audit without changing the normal output files or JSON schemas:
+
+```bash
+frxedit create UserForm1_new.frm --name UserForm1 --patch UserForm1.json --writer-audit-out UserForm1.writer-audit.json
+```
+
+The audit traces the deserialized template (`J`), normalized patch (`N`), requested target layout (`T`), Writer/CFB evidence (`B`), and strict re-read result (`C`). Binary payloads are represented by byte length and SHA-256 rather than embedded blobs. The option is intended for defect isolation; it does not by itself establish native Office compatibility.
 
 ---
 

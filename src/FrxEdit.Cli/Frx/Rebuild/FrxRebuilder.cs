@@ -1,8 +1,9 @@
 internal static class FrxRebuilder
 {
-    public static byte[] RebuildContainer(FrxBinary source, LayoutInspection? layout = null, RebuildStreamMode streamMode = RebuildStreamMode.ContainerOnly)
+    public static byte[] RebuildContainer(FrxBinary source, LayoutInspection? layout = null, RebuildStreamMode streamMode = RebuildStreamMode.ContainerOnly, WriterProvenanceAuditCollector? writerAudit = null)
     {
         var dump = CompoundStorageInspector.Inspect(source.Bytes, source.OleOffset);
+        writerAudit?.RecordStorageSnapshot("T -> B: source blank/base CFB", dump);
         if (streamMode is RebuildStreamMode.ObjectStreamRoundTrip or RebuildStreamMode.ObjectStreamSerializeFixed or RebuildStreamMode.ObjectStreamNormalizeStrings or RebuildStreamMode.ObjectStreamPatchProperties or RebuildStreamMode.FormAndObjectPatch)
         {
             if (layout is null)
@@ -20,8 +21,11 @@ internal static class FrxRebuilder
                     RebuildStreamMode.ObjectStreamPatchProperties => ObjectStreamRewriteMode.PatchProperties,
                     RebuildStreamMode.FormAndObjectPatch => ObjectStreamRewriteMode.FormAndObjectPatch,
                     _ => ObjectStreamRewriteMode.RoundTrip
-                });
+                },
+                writerAudit);
         }
+
+        writerAudit?.RecordStorageSnapshot("T -> B: rewritten logical CFB before CompoundStorageRebuilder", dump);
 
         var rebuiltOle = CompoundStorageRebuilder.BuildFromDump(dump);
 

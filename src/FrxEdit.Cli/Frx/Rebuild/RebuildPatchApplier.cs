@@ -92,7 +92,7 @@ internal static class RebuildPatchApplier
         "scrollTop"
     };
 
-    public static LayoutInspection ApplyObjectPropertyPatch(LayoutInspection source, PatchDocument patch, bool allowFormSitePatch = false, string? formName = null, string? patchDir = null)
+    public static LayoutInspection ApplyObjectPropertyPatch(LayoutInspection source, PatchDocument patch, bool allowFormSitePatch = false, string? formName = null, string? patchDir = null, WriterProvenanceAuditCollector? writerAudit = null)
     {
         ValidateObjectPatch(patch, allowFormSitePatch, formName);
 
@@ -202,12 +202,12 @@ internal static class RebuildPatchApplier
 
         if (allowFormSitePatch && moveByName.Count > 0)
         {
-            controls.AddRange(BuildMovedControls(source.Controls, controls, moveByName, patchedByName, layoutByName, patchDir));
+            controls.AddRange(BuildMovedControls(source.Controls, controls, moveByName, patchedByName, layoutByName, patchDir, writerAudit));
         }
 
         if (allowFormSitePatch && patch.Add is { Count: > 0 })
         {
-            controls.AddRange(BuildAddedControls(source.Controls, controls, patch.Add, patchDir, patchedByName, layoutByName));
+            controls.AddRange(BuildAddedControls(source.Controls, controls, patch.Add, patchDir, patchedByName, layoutByName, writerAudit));
         }
 
         return source with { Controls = controls, RemovedControls = removedControls, RemovedStoragePaths = removalPlan.StoragePaths, FrxFormControl = frxFormControl };
@@ -517,7 +517,8 @@ internal static class RebuildPatchApplier
         Dictionary<string, string?> moveByName,
         Dictionary<string, Dictionary<string, JsonElement>> patchedByName,
         Dictionary<string, LayoutPatch> layoutByName,
-        string? patchDir)
+        string? patchDir,
+        WriterProvenanceAuditCollector? writerAudit)
     {
         var additions = new List<AddControlPatch>();
         foreach (var (controlName, newParent) in moveByName)
@@ -554,7 +555,7 @@ internal static class RebuildPatchApplier
             additions.Add(add);
         }
 
-        return BuildAddedControls(templateControls, existingControls, additions, patchDir);
+        return BuildAddedControls(templateControls, existingControls, additions, patchDir, writerAudit: writerAudit);
     }
 
     private static IReadOnlyList<AdditionPlanEntry> BuildAdditionPlan(
@@ -751,7 +752,7 @@ internal static class RebuildPatchApplier
         int Height,
         string Caption);
 
-    private static IEnumerable<ControlInfo> BuildAddedControls(IReadOnlyList<ControlInfo> templateControls, IReadOnlyList<ControlInfo> existingControls, IReadOnlyList<AddControlPatch> additions, string? patchDir, Dictionary<string, Dictionary<string, JsonElement>>? patchedByName = null, Dictionary<string, LayoutPatch>? layoutByName = null)
+    private static IEnumerable<ControlInfo> BuildAddedControls(IReadOnlyList<ControlInfo> templateControls, IReadOnlyList<ControlInfo> existingControls, IReadOnlyList<AddControlPatch> additions, string? patchDir, Dictionary<string, Dictionary<string, JsonElement>>? patchedByName = null, Dictionary<string, LayoutPatch>? layoutByName = null, WriterProvenanceAuditCollector? writerAudit = null)
     {
         var additionPlan = BuildAdditionPlan(templateControls, existingControls, additions, patchedByName);
         var explicitPagesByMultiPage = additionPlan
@@ -920,6 +921,18 @@ internal static class RebuildPatchApplier
                     rawHeight ?? 0,
                     generatedStoragePath,
                     BuildGeneratedPageSiteFlags(props, pageIndex == selectedPageIndex));
+                writerAudit?.RecordGeneratedStorage(
+                    name,
+                    "Page",
+                    parent,
+                    generated.StoragePath,
+                    generated.SitePayload,
+                    new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase)
+                    {
+                        ["f"] = generated.FStream,
+                        ["o"] = generated.OStream
+                    },
+                    "RebuildPatchApplier.BuildAddedControls -> GeneratedStorageFactory.CreatePage");
 
                 props["generatedFormSitePayload"] = generated.SitePayload;
                 props["siteDepth"] = 0;
@@ -961,6 +974,14 @@ internal static class RebuildPatchApplier
                     rawHeight ?? 0,
                     add.Caption,
                     ownedStoragePath);
+                writerAudit?.RecordGeneratedStorage(
+                    name,
+                    "Frame",
+                    parent,
+                    ownedStoragePath,
+                    generated.SitePayload,
+                    GeneratedStreams(generated.Metadata),
+                    "RebuildPatchApplier.BuildAddedControls -> GeneratedStorageFactory.CreateFrame");
 
                 props["generatedFormSitePayload"] = generated.SitePayload;
                 props.Remove("caption");
@@ -1056,6 +1077,14 @@ internal static class RebuildPatchApplier
                     ownedStoragePath,
                     pageDefinitions,
                     selectedPageIndex);
+                writerAudit?.RecordGeneratedStorage(
+                    name,
+                    "MultiPage",
+                    parent,
+                    ownedStoragePath,
+                    generated.SitePayload,
+                    GeneratedStreams(generated.Metadata),
+                    "RebuildPatchApplier.BuildAddedControls -> GeneratedStorageFactory.CreateMultiPage");
 
                 props["generatedFormSitePayload"] = generated.SitePayload;
                 props.Remove("caption");
@@ -1071,6 +1100,18 @@ internal static class RebuildPatchApplier
                 for (var i = 0; i < generated.Pages.Count; i++)
                 {
                     var page = generated.Pages[i];
+                    writerAudit?.RecordGeneratedStorage(
+                        page.Name,
+                        "Page",
+                        name,
+                        page.StoragePath,
+                        page.SitePayload,
+                        new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase)
+                        {
+                            ["f"] = page.FStream,
+                            ["o"] = page.OStream
+                        },
+                        "GeneratedStorageFactory.CreateMultiPage page");
                     var explicitPage = explicitPagePlans.FirstOrDefault(candidate =>
                         candidate.Entry.Name.Equals(page.Name, StringComparison.OrdinalIgnoreCase));
                     var pageProps = explicitPage is not null
@@ -1156,6 +1197,15 @@ internal static class RebuildPatchApplier
                     rawHeight,
                     add.Caption,
                     add.Value,
+                    props);
+                writerAudit?.RecordGeneratedControl(
+                    name,
+                    type!,
+                    parent,
+                    targetStoragePath,
+                    generated.SitePayload,
+                    generated.ObjectPayload,
+                    generated.Metadata,
                     props);
 
                 props["generatedFormSitePayload"] = generated.SitePayload;
@@ -1250,6 +1300,15 @@ internal static class RebuildPatchApplier
         }
 
         return flags;
+    }
+
+    private static IReadOnlyDictionary<string, byte[]> GeneratedStreams(IReadOnlyDictionary<string, object?> metadata)
+    {
+        var result = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase);
+        if (metadata.TryGetValue("generatedStorageF", out var f) && f is byte[] fBytes) result["f"] = fBytes;
+        if (metadata.TryGetValue("generatedStorageO", out var o) && o is byte[] oBytes) result["o"] = oBytes;
+        if (metadata.TryGetValue("generatedStorageX", out var x) && x is byte[] xBytes) result["x"] = xBytes;
+        return result;
     }
 
     private static int NextTabIndexForParent(IEnumerable<ControlInfo> controls, string? parent)

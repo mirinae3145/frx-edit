@@ -3,12 +3,31 @@ internal static class ObjectStreamRoundTripRewriter
     public static CompoundStorageDump RewriteObjectStreams(
         CompoundStorageDump dump,
         LayoutInspection layout,
-        ObjectStreamRewriteMode mode = ObjectStreamRewriteMode.RoundTrip)
+        ObjectStreamRewriteMode mode = ObjectStreamRewriteMode.RoundTrip,
+        WriterProvenanceAuditCollector? writerAudit = null)
     {
         var hasGeneratedStorageStreams = LayoutHasGeneratedStorageStreams(layout);
         if (mode == ObjectStreamRewriteMode.FormAndObjectPatch && hasGeneratedStorageStreams)
         {
-            dump = dump with { Streams = MaterializeGeneratedStorageStreams(dump.Streams, layout) };
+            var existingPaths = dump.Streams
+                .Where(stream => !string.IsNullOrWhiteSpace(stream.Path))
+                .Select(stream => stream.Path)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var materializedStreams = MaterializeGeneratedStorageStreams(dump.Streams, layout);
+            foreach (var stream in materializedStreams.Where(stream =>
+                         !string.IsNullOrWhiteSpace(stream.Path) &&
+                         !existingPaths.Contains(stream.Path) &&
+                         stream.Kind.Equals("Stream", StringComparison.OrdinalIgnoreCase)))
+            {
+                writerAudit?.RecordStreamRewrite(
+                    $"generated {stream.Name}",
+                    stream.Path,
+                    [],
+                    stream.Data,
+                    "ObjectStreamRoundTripRewriter.MaterializeGeneratedStorageStreams");
+            }
+
+            dump = dump with { Streams = materializedStreams };
         }
 
         var slicesByObjectStreamPath = BuildSlicesByObjectStreamPath(layout);
@@ -48,6 +67,12 @@ internal static class ObjectStreamRoundTripRewriter
                 TryRewriteMultiPageInnerTabStripStream(stream, layout, sizeUpdates, out var rewrittenTabStripStream))
             {
                 rewrittenObjectStreams[stream.Path] = rewrittenTabStripStream;
+                writerAudit?.RecordStreamRewrite(
+                    "MultiPage internal TabStrip o",
+                    stream.Path,
+                    stream.Data,
+                    rewrittenTabStripStream,
+                    "ObjectStreamRoundTripRewriter.TryRewriteMultiPageInnerTabStripStream");
                 continue;
             }
 
@@ -63,6 +88,12 @@ internal static class ObjectStreamRoundTripRewriter
 
             var rewritten = RewriteObjectStream(stream.Path, stream.Data, streamsByPath, slices ?? [], additions ?? [], removals ?? [], mode, sizeUpdates);
             rewrittenObjectStreams[stream.Path] = rewritten;
+            writerAudit?.RecordStreamRewrite(
+                "object o",
+                stream.Path,
+                stream.Data,
+                rewritten,
+                "ObjectStreamRoundTripRewriter.RewriteObjectStream");
         }
 
         if (rewrittenObjectStreams.Count == 0 && !hasFormSiteChanges && !hasGeneratedStorageStreams)
@@ -145,6 +176,12 @@ internal static class ObjectStreamRoundTripRewriter
 
                 if (changed)
                 {
+                    writerAudit?.RecordStreamRewrite(
+                        "FormSiteData f",
+                        stream.Path,
+                        stream.Data,
+                        patched,
+                        "ObjectStreamRoundTripRewriter.RewriteFormSiteData / PatchRootFormScalars");
                     return WithNewData(stream, patched);
                 }
             }
@@ -155,6 +192,12 @@ internal static class ObjectStreamRoundTripRewriter
                 stream.Name.Equals("x", StringComparison.OrdinalIgnoreCase) &&
                 TryRewriteMultiPageXStream(stream, layout, out var rewrittenXStream))
             {
+                writerAudit?.RecordStreamRewrite(
+                    "MultiPage x",
+                    stream.Path,
+                    stream.Data,
+                    rewrittenXStream,
+                    "ObjectStreamRoundTripRewriter.TryRewriteMultiPageXStream");
                 return WithNewData(stream, rewrittenXStream);
             }
 

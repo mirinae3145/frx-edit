@@ -62,7 +62,11 @@ internal static class PatchDocumentGenerator
         return name;
     }
 
-    public static PatchDocument FromRaw(LayoutInspection raw, string formName, bool asTemplate = false)
+    public static PatchDocument FromRaw(
+        LayoutInspection raw,
+        string formName,
+        bool asTemplate = false,
+        global::SemanticAuditCollector? semanticAudit = null)
     {
         var properties = new Dictionary<string, Dictionary<string, JsonElement>>(StringComparer.OrdinalIgnoreCase);
         var layout = new Dictionary<string, LayoutPatch>(StringComparer.OrdinalIgnoreCase);
@@ -76,6 +80,13 @@ internal static class PatchDocumentGenerator
             {
                 if (kvp.Value is JsonElement element && (element.ValueKind == JsonValueKind.Object || element.ValueKind == JsonValueKind.Array))
                 {
+                    semanticAudit?.RecordTemplateDecision(
+                        "form", formName, "UserForm", null, "Root Entry", kvp.Key,
+                        true, kvp.Value, false, null, null,
+                        global::SemanticAuditCollector.ClassifyProperty(kvp.Key) == "diagnostic"
+                            ? "intentional diagnostic-only exclusion"
+                            : "R -> J loss",
+                        "PatchDocumentGenerator complex JsonElement exclusion");
                     continue;
                 }
                 if (RootFormPropertyNames.Contains(kvp.Key))
@@ -83,15 +94,47 @@ internal static class PatchDocumentGenerator
                     if (kvp.Key.Equals("formBooleanProperties", StringComparison.OrdinalIgnoreCase) && kvp.Value is string hex && hex.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
                     {
                         var bits = Convert.ToUInt32(hex[2..], 16);
-                        formProps["enabled"] = (bits & 1) != 0;
-                        formProps["pictureTiling"] = (bits & (1u << 4)) != 0;
-                        formProps["keepScrollBarsVisible"] = (bits & (1u << 21)) != 0;
-                        formProps["rightToLeft"] = (bits & (1u << 22)) != 0;
+                        var transformed = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+                        {
+                            ["enabled"] = (bits & 1) != 0,
+                            ["pictureTiling"] = (bits & (1u << 4)) != 0,
+                            ["keepScrollBarsVisible"] = (bits & (1u << 21)) != 0,
+                            ["rightToLeft"] = (bits & (1u << 22)) != 0
+                        };
+                        foreach (var (name, value) in transformed)
+                        {
+                            formProps[name] = value;
+                        }
+                        semanticAudit?.RecordTemplateDecision(
+                            "form", formName, "UserForm", null, "Root Entry", kvp.Key,
+                            true, kvp.Value, true, "$transform.formBooleanProperties", transformed,
+                            "R -> J transformation",
+                            "PatchDocumentGenerator formBooleanProperties bit expansion");
                     }
                     else
                     {
-                        formProps[CanonicalizeRootFormPropertyName(kvp.Key)] = kvp.Value;
+                        var canonicalName = CanonicalizeRootFormPropertyName(kvp.Key);
+                        formProps[canonicalName] = kvp.Value;
+                        semanticAudit?.RecordTemplateDecision(
+                            "form", formName, "UserForm", null, "Root Entry", kvp.Key,
+                            true, kvp.Value, true, canonicalName, kvp.Value,
+                            canonicalName.Equals(kvp.Key, StringComparison.OrdinalIgnoreCase)
+                                ? "preserved"
+                                : "R -> J transformation",
+                            canonicalName.Equals(kvp.Key, StringComparison.OrdinalIgnoreCase)
+                                ? "PatchDocumentGenerator.RootFormPropertyNames"
+                                : "PatchDocumentGenerator.CanonicalizeRootFormPropertyName");
                     }
+                }
+                else
+                {
+                    semanticAudit?.RecordTemplateDecision(
+                        "form", formName, "UserForm", null, "Root Entry", kvp.Key,
+                        true, kvp.Value, false, null, null,
+                        global::SemanticAuditCollector.ClassifyProperty(kvp.Key) == "diagnostic"
+                            ? "intentional diagnostic-only exclusion"
+                            : "R -> J loss",
+                        "PatchDocumentGenerator.RootFormPropertyNames whitelist");
                 }
             }
         }
@@ -177,6 +220,8 @@ internal static class PatchDocumentGenerator
                 cleanedProps["parent"] = control.Parent;
             }
 
+            RecordControlAudit(semanticAudit, control, cleanedProps, values, asTemplate);
+
             properties[control.Name] = ConvertToJsonElements(cleanedProps);
 
             if (asTemplate)
@@ -207,6 +252,228 @@ internal static class PatchDocumentGenerator
             result[kvp.Key] = JsonSerializer.Deserialize<JsonElement>(jsonString);
         }
         return result;
+    }
+
+    private static void RecordControlAudit(
+        global::SemanticAuditCollector? semanticAudit,
+        ControlInfo control,
+        IReadOnlyDictionary<string, object?> cleanedProps,
+        IReadOnlyDictionary<string, object?> defaults,
+        bool asTemplate)
+    {
+        if (semanticAudit is null)
+        {
+            return;
+        }
+
+        var storageScope = control.Properties is not null && control.Properties.TryGetValue("storagePath", out var storagePath)
+            ? storagePath?.ToString()
+            : null;
+        semanticAudit.RecordTemplateDecision(
+            "control", control.Name, control.Type, control.Parent, storageScope, "name",
+            true, control.Name, asTemplate, asTemplate ? "$add.name" : null, asTemplate ? control.Name : null,
+            asTemplate ? "R -> J transformation" : "R -> J loss",
+            asTemplate ? "PatchDocumentGenerator template Add.name" : "PatchDocumentGenerator patch mode has no Add entry");
+        semanticAudit.RecordTemplateDecision(
+            "control", control.Name, control.Type, control.Parent, storageScope, "type",
+            true, control.Type, true, "type", control.Type,
+            "preserved", "PatchDocumentGenerator structural type projection");
+        semanticAudit.RecordTemplateDecision(
+            "control", control.Name, control.Type, control.Parent, storageScope, "parent",
+            true, control.Parent, control.Parent is not null || asTemplate, "parent", control.Parent ?? "",
+            "R -> J transformation", "PatchDocumentGenerator structural parent projection");
+
+        foreach (var (rawName, rawValue, pointName, pointValue) in new[]
+        {
+            ("left", (object?)control.Left, "leftPt", (object?)control.LeftPt),
+            ("top", (object?)control.Top, "topPt", (object?)control.TopPt),
+            ("rawWidth", (object?)control.RawWidth, "widthPt", (object?)control.WidthPt),
+            ("rawHeight", (object?)control.RawHeight, "heightPt", (object?)control.HeightPt)
+        })
+        {
+            semanticAudit.RecordTemplateDecision(
+                "control", control.Name, control.Type, control.Parent, storageScope, rawName,
+                true, rawValue, true, pointName, pointValue,
+                "R -> J transformation", "PatchDocumentGenerator raw geometry to point geometry projection");
+        }
+
+        foreach (var (name, value) in new Dictionary<string, object?>
+        {
+            ["leftPt"] = control.LeftPt,
+            ["topPt"] = control.TopPt,
+            ["widthPt"] = control.WidthPt,
+            ["heightPt"] = control.HeightPt
+        })
+        {
+            semanticAudit.RecordTemplateDecision(
+                "control", control.Name, control.Type, control.Parent, storageScope, name,
+                true, value, true, name, value,
+                "preserved", "PatchDocumentGenerator control geometry projection");
+        }
+
+        var rawProperties = control.Properties ?? new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (name, value) in rawProperties)
+        {
+            if (name.Equals("name", StringComparison.OrdinalIgnoreCase) ||
+                name.Equals("type", StringComparison.OrdinalIgnoreCase) ||
+                name.Equals("parent", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var geometryProjection = name.ToLowerInvariant() switch
+            {
+                "left" => (Property: "leftPt", Value: (object?)control.LeftPt),
+                "top" => (Property: "topPt", Value: (object?)control.TopPt),
+                "rawwidth" => (Property: "widthPt", Value: (object?)control.WidthPt),
+                "rawheight" => (Property: "heightPt", Value: (object?)control.HeightPt),
+                _ => default
+            };
+            if (geometryProjection.Property is not null)
+            {
+                semanticAudit.RecordTemplateDecision(
+                    "control", control.Name, control.Type, control.Parent, storageScope, name,
+                    true, value, true, geometryProjection.Property, geometryProjection.Value,
+                    "R -> J transformation", "PatchDocumentGenerator raw geometry to point geometry projection");
+                continue;
+            }
+
+            if (cleanedProps.TryGetValue(name, out var emittedValue))
+            {
+                semanticAudit.RecordTemplateDecision(
+                    "control", control.Name, control.Type, control.Parent, storageScope, name,
+                    true, value, true, name, emittedValue,
+                    "preserved", $"PatchDocumentGenerator.IsRebuiltMorphProperty({control.Type}) accepted");
+                continue;
+            }
+
+            if (name.Equals("fontEffects", StringComparison.OrdinalIgnoreCase))
+            {
+                var decomposed = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+                foreach (var effectName in new[] { "fontItalic", "fontUnderline", "fontStrikethrough" })
+                {
+                    if (cleanedProps.TryGetValue(effectName, out var effectValue))
+                    {
+                        decomposed[effectName] = effectValue;
+                    }
+                }
+
+                semanticAudit.RecordTemplateDecision(
+                    "control", control.Name, control.Type, control.Parent, storageScope, name,
+                    true, value, decomposed.Count > 0, "$transform.fontEffects", decomposed,
+                    decomposed.Count > 0 ? "R -> J transformation" : "R -> J loss",
+                    "PatchDocumentGenerator packed font effects to decomposed font flags");
+                continue;
+            }
+
+            if (name.Equals("multiPageParent", StringComparison.OrdinalIgnoreCase) && control.Parent is not null)
+            {
+                semanticAudit.RecordTemplateDecision(
+                    "control", control.Name, control.Type, control.Parent, storageScope, name,
+                    true, value, true, "$add.parent", control.Parent,
+                    "R -> J transformation", "PatchDocumentGenerator page ownership to Add.parent");
+                continue;
+            }
+
+            if (name.Equals("multiPagePageIndex", StringComparison.OrdinalIgnoreCase))
+            {
+                semanticAudit.RecordTemplateDecision(
+                    "control", control.Name, control.Type, control.Parent, storageScope, name,
+                    true, value, true, "$add.pageOrder", value,
+                    "R -> J transformation", "PatchDocumentGenerator page index to ordered Add entries");
+                continue;
+            }
+
+            if (name.Equals("multiPagePageCount", StringComparison.OrdinalIgnoreCase))
+            {
+                semanticAudit.RecordTemplateDecision(
+                    "control", control.Name, control.Type, control.Parent, storageScope, name,
+                    true, value, true, "$add.pageCount", value,
+                    "R -> J transformation", "PatchDocumentGenerator page count to child Page Add entries");
+                continue;
+            }
+
+            if (IsTypeDerivedDefault(control.Type, name, value))
+            {
+                semanticAudit.RecordTemplateDecision(
+                    "control", control.Name, control.Type, control.Parent, storageScope, name,
+                    true, value, false, null, null,
+                    "default/representation normalization",
+                    "PatchDocumentGenerator omitted a type-derived GeneratedControlFactory default");
+                continue;
+            }
+
+            var diagnosticFilter = name.EndsWith("Offset", StringComparison.OrdinalIgnoreCase) ||
+                name.EndsWith("Span", StringComparison.OrdinalIgnoreCase) ||
+                name.Equals("recordIndex", StringComparison.OrdinalIgnoreCase);
+            var omittedFalseSiteFlag = value is false &&
+                (name.Equals("default", StringComparison.OrdinalIgnoreCase) ||
+                 name.Equals("cancel", StringComparison.OrdinalIgnoreCase));
+            semanticAudit.RecordTemplateDecision(
+                "control", control.Name, control.Type, control.Parent, storageScope, name,
+                true, value, false, null, null,
+                omittedFalseSiteFlag
+                    ? "default/representation normalization"
+                    : global::SemanticAuditCollector.ClassifyProperty(name) == "diagnostic"
+                    ? "intentional diagnostic-only exclusion"
+                    : "R -> J loss",
+                omittedFalseSiteFlag
+                    ? "PatchDocumentGenerator omitted false site flag; FormSiteFactory defaults it to false"
+                    : diagnosticFilter
+                    ? "PatchDocumentGenerator offset/span/type/parent/recordIndex diagnostic prefilter"
+                    : $"PatchDocumentGenerator.IsRebuiltMorphProperty({control.Type}) rejected");
+        }
+
+        foreach (var (name, value) in cleanedProps)
+        {
+            if (rawProperties.ContainsKey(name) ||
+                name is "$action" or "$newName" or "type" or "parent" or "leftPt" or "topPt" or "widthPt" or "heightPt")
+            {
+                continue;
+            }
+
+            semanticAudit.RecordTemplateDecision(
+                "control", control.Name, control.Type, control.Parent, storageScope, name,
+                false, null, true, name, value,
+                defaults.ContainsKey(name) ? "default/representation normalization" : "unresolved",
+                defaults.ContainsKey(name)
+                    ? "PatchDocumentGenerator.AddDefaultPlaceholders"
+                    : "PatchDocumentGenerator synthesized property");
+        }
+    }
+
+    private static bool IsTypeDerivedDefault(string controlType, string name, object? value)
+    {
+        var normalizedType = controlType.ToLowerInvariant();
+        var normalizedName = name.ToLowerInvariant();
+        if (normalizedName == "displaystyle")
+        {
+            var expected = normalizedType switch
+            {
+                "checkbox" => 4,
+                "optionbutton" => 5,
+                "togglebutton" => 6,
+                _ => -1
+            };
+            return expected >= 0 && Convert.ToInt32(value) == expected;
+        }
+
+        if (normalizedType is not ("checkbox" or "optionbutton" or "togglebutton") ||
+            value is not bool actual)
+        {
+            return false;
+        }
+
+        var defaultBits = normalizedType == "optionbutton" ? 0x0080_001Bu : 0x2C80_081Bu;
+        var bit = normalizedName switch
+        {
+            "integralheight" => 11,
+            "selectionmargin" => 26,
+            "autowordselect" => 27,
+            "hideselection" => 29,
+            _ => -1
+        };
+        return bit >= 0 && actual == ((defaultBits & (1u << bit)) != 0);
     }
 
     private static void AddDefaultPlaceholders(

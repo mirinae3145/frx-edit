@@ -72,16 +72,18 @@ internal sealed class FrxBinary
         IReadOnlySet<string>? knownControlNames = null,
         IReadOnlyDictionary<string, string>? controlScopes = null,
         ParserMode parserMode = ParserMode.Tolerant,
-        IReadOnlyDictionary<string, object?>? frmProperties = null)
+        IReadOnlyDictionary<string, object?>? frmProperties = null,
+        SemanticAuditCollector? semanticAudit = null)
     {
         if (parserMode == ParserMode.Legacy)
         {
             return InspectByNameScan(knownControlNames, controlScopes);
         }
 
-        var structured = InspectStructuredStorage(knownControlNames, controlScopes, parserMode, out var frxFormControl);
+        var structured = InspectStructuredStorage(knownControlNames, controlScopes, parserMode, semanticAudit, out var frxFormControl);
         if (frxFormControl is not null && frmProperties is not null)
         {
+            semanticAudit?.ObserveFrmProperties(frmProperties);
             var merged = new Dictionary<string, object?>(frxFormControl, StringComparer.OrdinalIgnoreCase);
             foreach (var (k, v) in frmProperties)
             {
@@ -348,6 +350,7 @@ internal sealed class FrxBinary
         IReadOnlySet<string>? knownControlNames,
         IReadOnlyDictionary<string, string>? controlScopes,
         ParserMode parserMode,
+        SemanticAuditCollector? semanticAudit,
         out Dictionary<string, object?>? rootFormControl)
     {
         rootFormControl = null;
@@ -389,17 +392,37 @@ internal sealed class FrxBinary
             {
                 if (streamOwner is not null)
                 {
+                    semanticAudit?.ObserveFormControl(
+                        "control",
+                        streamOwner,
+                        null,
+                        null,
+                        stream.ParentPath,
+                        formControlProperties);
                     formControlByOwner[streamOwner] = formControlProperties;
                 }
                 else if (IsRootStoragePath(stream.ParentPath ?? string.Empty))
                 {
+                    semanticAudit?.ObserveFormControl(
+                        "form",
+                        semanticAudit.FormName,
+                        "UserForm",
+                        null,
+                        stream.ParentPath,
+                        formControlProperties);
                     rootFormControl = BuildRootFormControlProperties(stream, formControlProperties);
                     AnnotateRootStorage(rootFormControl, storage.Streams);
                 }
             }
 
             var pairedOStream = FindPairedObjectStream(storage.Streams, stream);
-            var streamResult = FormStreamParser.Read(stream, knownControlNames, pairedOStream, parserMode);
+            var streamResult = FormStreamParser.Read(
+                stream,
+                knownControlNames,
+                pairedOStream,
+                parserMode,
+                semanticAudit,
+                streamOwner);
             var streamControls = BuildControlInfos(streamResult.Controls, streamOwner, controlScopes);
             if (streamOwner is not null)
             {
@@ -452,7 +475,7 @@ internal sealed class FrxBinary
         }
 
         ApplyInternalTabStripProperties(controls, internalSitesByOwner);
-        ApplyMultiPageXStreams(controls, storage.Streams, controlsByStorageAndSiteId);
+        ApplyMultiPageXStreams(controls, storage.Streams, controlsByStorageAndSiteId, semanticAudit);
         AnnotateStorageBackedControls(controls, storage.Streams);
 
         return controls.Values.ToList();
@@ -785,7 +808,8 @@ internal sealed class FrxBinary
     private static void ApplyMultiPageXStreams(
         Dictionary<int, ControlInfo> controls,
         IReadOnlyList<StorageEntryDump> streams,
-        IReadOnlyDictionary<string, Dictionary<uint, string>> controlsByStorageAndSiteId)
+        IReadOnlyDictionary<string, Dictionary<uint, string>> controlsByStorageAndSiteId,
+        SemanticAuditCollector? semanticAudit)
     {
         var byName = controls.ToDictionary(pair => pair.Value.Name, pair => pair.Key, StringComparer.OrdinalIgnoreCase);
         foreach (var xStream in streams.Where(s => s.Kind == "Stream" && s.Name == "x"))
@@ -815,6 +839,14 @@ internal sealed class FrxBinary
                 ["pagePropertiesCount"] = xProperties.PageProperties.Count,
                 ["pageProperties"] = xProperties.PageProperties
             };
+            semanticAudit?.ObserveProperties(
+                "control",
+                owner,
+                controls[ownerKey].Type,
+                controls[ownerKey].Parent,
+                xStream.ParentPath,
+                ownerProperties,
+                "MultiPageXStreamParser.MultiPageProperties");
             controls[ownerKey] = MergeProperties(controls[ownerKey], ownerProperties);
 
             for (var i = 0; i < xProperties.PageIds.Count; i++)
@@ -845,6 +877,15 @@ internal sealed class FrxBinary
                         pageProperties[$"pageProperties{name[0].ToString().ToUpperInvariant()}{name[1..]}"] = value;
                     }
                 }
+
+                semanticAudit?.ObserveProperties(
+                    "control",
+                    pageName,
+                    controls[pageKey].Type,
+                    owner,
+                    xStream.ParentPath,
+                    pageProperties,
+                    "MultiPageXStreamParser.PageProperties");
 
                 controls[pageKey] = MergeProperties(controls[pageKey], pageProperties);
             }

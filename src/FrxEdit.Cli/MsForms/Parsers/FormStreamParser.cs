@@ -9,7 +9,9 @@ internal static class FormStreamParser
         StorageEntryDump stream,
         IReadOnlySet<string>? knownControlNames,
         StorageEntryDump? objectStream = null,
-        ParserMode parserMode = ParserMode.Tolerant)
+        ParserMode parserMode = ParserMode.Tolerant,
+        SemanticAuditCollector? semanticAudit = null,
+        string? streamOwner = null)
     {
         if (parserMode == ParserMode.Legacy)
         {
@@ -22,6 +24,11 @@ internal static class FormStreamParser
             if (objectStream != null)
             {
                 StructuredMsFormsParser.EnrichFromObjectStream(sites, objectStream);
+            }
+
+            foreach (var site in sites)
+            {
+                semanticAudit?.ObserveSite(stream, site, streamOwner);
             }
 
             var controls = sites
