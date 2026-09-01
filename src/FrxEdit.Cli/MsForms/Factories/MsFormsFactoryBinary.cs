@@ -1,5 +1,11 @@
 internal static class MsFormsFactoryBinary
 {
+    private static ReadOnlySpan<byte> StdPictureClsid =>
+    [
+        0x04, 0x52, 0xE3, 0x0B, 0x91, 0x8F, 0xCE, 0x11,
+        0x9D, 0xE3, 0x00, 0xAA, 0x00, 0x4B, 0xB8, 0x51
+    ];
+
     public static byte[] BuildVersionedControl(byte minor, byte major, uint propMask, byte[] dataBlock, byte[] extraBlock)
     {
         using var output = new MemoryStream();
@@ -126,6 +132,75 @@ internal static class MsFormsFactoryBinary
         };
     }
 
+    public static uint? GetUInt32(Dictionary<string, object?> properties, string name)
+    {
+        if (!properties.TryGetValue(name, out var value) || value is null)
+        {
+            return null;
+        }
+
+        return value switch
+        {
+            uint ui => ui,
+            int i => unchecked((uint)i),
+            long l when l >= int.MinValue && l <= uint.MaxValue => unchecked((uint)l),
+            ulong ul when ul <= uint.MaxValue => (uint)ul,
+            short s => unchecked((uint)s),
+            ushort us => us,
+            byte b => b,
+            sbyte sb => unchecked((uint)sb),
+            JsonElement element when element.ValueKind == JsonValueKind.Number && element.TryGetUInt32(out var ui) => ui,
+            JsonElement element when element.ValueKind == JsonValueKind.Number && element.TryGetInt32(out var i) => unchecked((uint)i),
+            JsonElement element when element.ValueKind == JsonValueKind.Number && element.TryGetInt64(out var l) && l >= int.MinValue && l <= uint.MaxValue => unchecked((uint)l),
+            string text when TryParseUInt32(text, out var parsed) => parsed,
+            _ => null
+        };
+    }
+
+    public static byte[] GetNativePictureStream(
+        Dictionary<string, object?> properties,
+        string propertyName,
+        string controlType,
+        string controlName)
+    {
+        var value = GetString(properties, propertyName);
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return [];
+        }
+
+        const string prefix = "base64:";
+        if (!value.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new CliException($"Generated {controlType} '{controlName}' {propertyName} must be resolved to a base64 native picture stream.");
+        }
+
+        try
+        {
+            return Convert.FromBase64String(value[prefix.Length..]);
+        }
+        catch (FormatException ex)
+        {
+            throw new CliException($"Generated {controlType} '{controlName}' {propertyName} contains invalid base64 data: {ex.Message}");
+        }
+    }
+
+    public static bool IsNativePictureStream(ReadOnlySpan<byte> bytes)
+    {
+        if (bytes.Length < 24 ||
+            !bytes[..16].SequenceEqual(StdPictureClsid) ||
+            BinaryPrimitives.ReadUInt32LittleEndian(bytes.Slice(16, 4)) != 0x0000_746C)
+        {
+            return false;
+        }
+
+        var declaredLength = BinaryPrimitives.ReadUInt32LittleEndian(bytes.Slice(20, 4));
+        return declaredLength == bytes.Length - 24;
+    }
+
+    public static ReadOnlySpan<byte> GetPicturePayload(ReadOnlySpan<byte> bytes) =>
+        IsNativePictureStream(bytes) ? bytes[24..] : bytes;
+
     public static bool? GetBool(Dictionary<string, object?> properties, string name)
     {
         if (!properties.TryGetValue(name, out var value) || value is null)
@@ -163,6 +238,35 @@ internal static class MsFormsFactoryBinary
         };
     }
 
+    public static IReadOnlyList<uint>? GetUInt32List(Dictionary<string, object?> properties, string name)
+    {
+        if (!properties.TryGetValue(name, out var value) || value is null)
+        {
+            return null;
+        }
+
+        if (value is JsonElement { ValueKind: JsonValueKind.Array } element)
+        {
+            var result = new List<uint>();
+            foreach (var item in element.EnumerateArray())
+            {
+                var rawItem = item;
+                if (item.ValueKind == JsonValueKind.Object)
+                {
+                    if (!item.TryGetProperty("raw", out rawItem) && !item.TryGetProperty("rawHex", out rawItem)) return null;
+                }
+                var wrapper = new Dictionary<string, object?> { [name] = rawItem };
+                if (GetUInt32(wrapper, name) is not uint parsed) return null;
+                result.Add(parsed);
+            }
+            return result;
+        }
+
+        if (value is IEnumerable<uint> unsignedValues) return unsignedValues.ToArray();
+        if (value is IEnumerable<int> signedValues) return signedValues.Select(item => unchecked((uint)item)).ToArray();
+        return null;
+    }
+
     public static uint ParseColor(string? text, uint fallback)
     {
         if (FrxEdit.Cli.MsForms.OleColorConverter.TryParse(text ?? string.Empty, out var value))
@@ -171,5 +275,28 @@ internal static class MsFormsFactoryBinary
         }
 
         return fallback;
+    }
+
+    private static bool TryParseUInt32(string text, out uint value)
+    {
+        text = text.Trim();
+        if (text.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+        {
+            return uint.TryParse(text[2..], NumberStyles.HexNumber, CultureInfo.InvariantCulture, out value);
+        }
+
+        if (uint.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out value))
+        {
+            return true;
+        }
+
+        if (int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var signed))
+        {
+            value = unchecked((uint)signed);
+            return true;
+        }
+
+        value = 0;
+        return false;
     }
 }

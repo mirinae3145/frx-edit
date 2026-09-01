@@ -923,6 +923,10 @@ internal sealed class FrxBinary
                 ["multiPageTabStripRawHeight"] = site.ObjectProperties.Height,
                 ["multiPageTabStripTabIndex"] = site.TabIndex
             };
+            if (site.ExtraProperties.TryGetValue("siteObjectStreamSizeOffset", out var objectSizeOffset))
+            {
+                projected["multiPageTabStripSiteObjectStreamSizeOffset"] = objectSizeOffset;
+            }
 
             foreach (var (name, value) in site.ObjectProperties.Properties)
             {
@@ -956,7 +960,7 @@ internal sealed class FrxBinary
 
         return flags.Select(flag => new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
         {
-            ["index"] = flag.TryGetValue("index", out var index) ? index : null,
+            ["raw"] = flag.TryGetValue("raw", out var raw) ? raw : null,
             ["visible"] = flag.TryGetValue("visible", out var visible) ? visible : null,
             ["enabled"] = flag.TryGetValue("enabled", out var enabled) ? enabled : null
         }).ToList();

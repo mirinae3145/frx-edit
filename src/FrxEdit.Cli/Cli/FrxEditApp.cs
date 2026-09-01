@@ -30,6 +30,112 @@ internal sealed class FrxEditApp(TextWriter stdout, TextWriter stderr)
         return updatedFrm;
     }
 
+    private static uint? GetGeneratedRootBooleanProperties(PatchDocument? patch, string formName)
+    {
+        if (patch?.Properties is null)
+        {
+            return null;
+        }
+
+        Dictionary<string, JsonElement>? properties = null;
+        foreach (var key in new[] { formName, "UserForm", "Form", "root" })
+        {
+            if (patch.Properties.TryGetValue(key, out properties))
+            {
+                break;
+            }
+        }
+
+        if (properties is null)
+        {
+            return null;
+        }
+
+        uint? bits = null;
+        if (properties.TryGetValue("formBooleanProperties", out var raw))
+        {
+            if (raw.ValueKind == JsonValueKind.Number && raw.TryGetUInt32(out var numeric))
+            {
+                bits = numeric;
+            }
+            else if (raw.ValueKind == JsonValueKind.String)
+            {
+                var text = raw.GetString()?.Trim() ?? string.Empty;
+                if (text.StartsWith("0x", StringComparison.OrdinalIgnoreCase) &&
+                    uint.TryParse(text[2..], System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture, out var hex))
+                {
+                    bits = hex;
+                }
+            }
+
+            if (bits is null)
+            {
+                throw new CliException($"Property 'formBooleanProperties' for '{formName}' must be a 32-bit unsigned integer or 0x-prefixed hexadecimal string.");
+            }
+        }
+
+        foreach (var (name, bit) in new[]
+        {
+            ("enabled", 0),
+            ("pictureTiling", 4),
+            ("keepScrollBarsVisible", 21),
+            ("rightToLeft", 22)
+        })
+        {
+            if (!properties.TryGetValue(name, out var requested))
+            {
+                continue;
+            }
+
+            bits ??= 0x0020_0001u;
+            var enabled = requested.ValueKind switch
+            {
+                JsonValueKind.True => true,
+                JsonValueKind.False => false,
+                JsonValueKind.Number when requested.TryGetInt32(out var value) => value != 0,
+                _ => throw new CliException($"Property '{name}' for '{formName}' must be true, false, 1 or 0.")
+            };
+            var mask = 1u << bit;
+            bits = enabled ? bits.Value | mask : bits.Value & ~mask;
+        }
+
+        return bits;
+    }
+
+    private static int? GetGeneratedRootGroupCount(PatchDocument? patch, string formName)
+    {
+        if (patch?.Properties is null)
+        {
+            return null;
+        }
+
+        Dictionary<string, JsonElement>? properties = null;
+        foreach (var key in new[] { formName, "UserForm", "Form", "root" })
+        {
+            if (patch.Properties.TryGetValue(key, out properties))
+            {
+                break;
+            }
+        }
+
+        if (properties is null || !properties.TryGetValue("formGroupCount", out var requested))
+        {
+            return null;
+        }
+
+        if (requested.ValueKind != JsonValueKind.Number || !requested.TryGetInt32(out var groupCount))
+        {
+            throw new CliException($"Property 'formGroupCount' for '{formName}' must be a non-negative 32-bit integer.");
+        }
+
+        if (groupCount < 0)
+        {
+            throw new CliException($"Property 'formGroupCount' for '{formName}' must be a non-negative 32-bit integer.");
+        }
+
+        return groupCount;
+    }
+
     public int Run(string[] args)
     {
         try
@@ -186,9 +292,9 @@ internal sealed class FrxEditApp(TextWriter stdout, TextWriter stderr)
 
         var project = UserFormProject.Load(frmPath);
         var auditPatchDir = patchPath is null ? null : Path.GetDirectoryName(patchPath);
-        var applyPatchDir = parsed.GetOption("patch") is not null
-            ? Path.GetDirectoryName(Path.GetFullPath(parsed.GetOption("patch")!))
-            : null;
+        // Asset URIs are relative to the patch document, regardless of whether the
+        // patch was supplied positionally or through --patch.
+        var applyPatchDir = auditPatchDir;
         var writerAudit = writerAuditOut is null || patchPath is null
             ? null
             : new WriterProvenanceAuditCollector("build", project.FormName, patchPath, auditPatchDir);
@@ -215,6 +321,9 @@ internal sealed class FrxEditApp(TextWriter stdout, TextWriter stderr)
         var targetLayout = patch is null
             ? sourceLayout
             : RebuildPatchApplier.ApplyObjectPropertyPatch(sourceLayout, patch, allowFormSitePatch: streamMode == RebuildStreamMode.FormAndObjectPatch, formName: project.FormName, patchDir: applyPatchDir, writerAudit: writerAudit);
+        ReconstructionIntentRegistry.Set(
+            targetLayout,
+            ReconstructionIntentBuilder.Build(sourceLayout, targetLayout, patch, project.FormName));
         writerAudit?.CaptureLayout("T", targetLayout);
         if (patch is not null)
         {
@@ -232,7 +341,10 @@ internal sealed class FrxEditApp(TextWriter stdout, TextWriter stderr)
         updatedFrm = UserFormProject.ReplaceOleObjectBlob(updatedFrm, Path.GetFileName(outFrxPath));
         updatedFrm = ApplyVbaFile(updatedFrm, patchPath, frmPath, project.Encoding);
         updatedFrm = VbaCodeGenerator.Apply(updatedFrm, patch?.Code);
-        updatedFrm = UserFormProject.SynchronizeFormProperties(updatedFrm, targetLayout.FrxFormControl);
+        updatedFrm = UserFormProject.SynchronizeFormProperties(
+            updatedFrm,
+            targetLayout.FrxFormControl,
+            ReconstructionIntentRegistry.Get(targetLayout)?.FrmRootProperties);
         File.WriteAllText(outFrmPath, updatedFrm, project.Encoding);
         var removedScopeNames = targetLayout.RemovedControls?.Select(control => control.Name).ToList() ?? patch?.Remove;
         UserFormProject.WriteScopesCopy(outFrmPath, project.ControlScopes, patch?.Renames, removedScopeNames);
@@ -241,7 +353,11 @@ internal sealed class FrxEditApp(TextWriter stdout, TextWriter stderr)
         var rebuilt = FrxBinary.Read(rebuiltProject.FrxPath);
         var rebuiltLayout = rebuilt.Inspect(rebuiltProject.KnownControlNames, rebuiltProject.ControlScopes, parserMode, rebuiltProject.FormProperties);
         writerAudit?.CaptureLayout("C", rebuiltLayout);
-        var comparison = RebuildComparison.From(targetLayout, rebuiltLayout) with
+        var comparison = RebuildComparison.From(
+            targetLayout,
+            rebuiltLayout,
+            project.FormName,
+            rebuiltProject.FormName) with
         {
             InputControlCount = sourceLayout.Controls.Count,
             ExpectedControlCount = targetLayout.Controls.Count
@@ -280,17 +396,29 @@ internal sealed class FrxEditApp(TextWriter stdout, TextWriter stderr)
             throw new CliException("Options '--widthPt' and '--heightPt' must be greater than zero.");
         }
 
+        var patchPath = parsed.GetOption("patch") is { } requestedPatchPath
+            ? Path.GetFullPath(requestedPatchPath)
+            : null;
+        var patch = patchPath is null
+            ? null
+            : JsonSerializer.Deserialize<PatchDocument>(File.ReadAllText(patchPath), JsonOptions)
+                ?? throw new CliException("Patch file is empty.");
+
         var outFrxPath = Path.ChangeExtension(outFrmPath, ".frx");
         Directory.CreateDirectory(Path.GetDirectoryName(outFrmPath)!);
-        var generated = GeneratedUserFormFactory.Create(formName, caption, widthPt, heightPt, Path.GetFileName(outFrxPath));
+        var generated = GeneratedUserFormFactory.Create(
+            formName,
+            caption,
+            widthPt,
+            heightPt,
+            Path.GetFileName(outFrxPath),
+            GetGeneratedRootBooleanProperties(patch, formName),
+            GetGeneratedRootGroupCount(patch, formName));
         File.WriteAllBytes(outFrxPath, generated.FrxBytes);
         File.WriteAllText(outFrmPath, generated.FrmText, Encoding.GetEncoding(1252));
 
-        if (parsed.GetOption("patch") is { } patchPath)
+        if (patchPath is not null && patch is not null)
         {
-            patchPath = Path.GetFullPath(patchPath);
-            var patch = JsonSerializer.Deserialize<PatchDocument>(File.ReadAllText(patchPath), JsonOptions)
-                ?? throw new CliException("Patch file is empty.");
             var project = UserFormProject.Load(outFrmPath);
             var patchDir = Path.GetDirectoryName(patchPath);
             var writerAudit = writerAuditOut is null
@@ -307,6 +435,9 @@ internal sealed class FrxEditApp(TextWriter stdout, TextWriter stderr)
                 PatchValidator.Validate(patch, sourceLayout.Controls, formName: project.FormName);
                 RebuildPatchApplier.ValidateObjectPatch(patch, allowFormSitePatch: true, formName: project.FormName);
                 var targetLayout = RebuildPatchApplier.ApplyObjectPropertyPatch(sourceLayout, patch, allowFormSitePatch: true, formName: project.FormName, patchDir: patchDir, writerAudit: writerAudit);
+                ReconstructionIntentRegistry.Set(
+                    targetLayout,
+                    ReconstructionIntentBuilder.Build(sourceLayout, targetLayout, patch, project.FormName));
                 writerAudit?.CaptureLayout("T", targetLayout);
                 VbaCodeGenerator.Validate(patch.Code, targetLayout.Controls);
 
@@ -319,7 +450,10 @@ internal sealed class FrxEditApp(TextWriter stdout, TextWriter stderr)
                 updatedFrm = UserFormProject.ReplaceOleObjectBlob(updatedFrm, Path.GetFileName(outFrxPath));
                 updatedFrm = ApplyVbaFile(updatedFrm, patchPath, outFrmPath, project.Encoding);
                 updatedFrm = VbaCodeGenerator.Apply(updatedFrm, patch.Code);
-                updatedFrm = UserFormProject.SynchronizeFormProperties(updatedFrm, targetLayout.FrxFormControl);
+                updatedFrm = UserFormProject.SynchronizeFormProperties(
+                    updatedFrm,
+                    targetLayout.FrxFormControl,
+                    ReconstructionIntentRegistry.Get(targetLayout)?.FrmRootProperties);
                 File.WriteAllText(outFrmPath, updatedFrm, project.Encoding);
 
                 currentBoundary = "B -> C";
@@ -416,6 +550,9 @@ internal sealed class FrxEditApp(TextWriter stdout, TextWriter stderr)
 
                     RebuildPatchApplier.ValidateObjectPatch(patch, allowFormSitePatch: true, formName: project.FormName);
                     var targetLayout = RebuildPatchApplier.ApplyObjectPropertyPatch(sourceLayout, patch, allowFormSitePatch: true, formName: project.FormName, patchDir: patchDir);
+                    ReconstructionIntentRegistry.Set(
+                        targetLayout,
+                        ReconstructionIntentBuilder.Build(sourceLayout, targetLayout, patch, project.FormName));
                     VbaCodeGenerator.Validate(patch.Code, targetLayout.Controls);
 
                     var rebuiltBytes = FrxRebuilder.RebuildContainer(source, targetLayout, streamMode);
@@ -432,7 +569,10 @@ internal sealed class FrxEditApp(TextWriter stdout, TextWriter stderr)
                     updatedFrm = UserFormProject.ReplaceOleObjectBlob(updatedFrm, Path.GetFileName(outFrxPath));
                     updatedFrm = ApplyVbaFile(updatedFrm, patchPath, frmPath, project.Encoding);
                     updatedFrm = VbaCodeGenerator.Apply(updatedFrm, patch?.Code);
-                    updatedFrm = UserFormProject.SynchronizeFormProperties(updatedFrm, targetLayout.FrxFormControl);
+                    updatedFrm = UserFormProject.SynchronizeFormProperties(
+                        updatedFrm,
+                        targetLayout.FrxFormControl,
+                        ReconstructionIntentRegistry.Get(targetLayout)?.FrmRootProperties);
                     File.WriteAllText(tmpFrmPath, updatedFrm, project.Encoding);
                     
                     if (File.Exists(outFrxPath)) File.Replace(tmpFrxPath, outFrxPath, outFrxPath + ".bak"); else File.Move(tmpFrxPath, outFrxPath);
@@ -704,12 +844,7 @@ internal sealed class FrxEditApp(TextWriter stdout, TextWriter stderr)
                     {
                         var bytes = Convert.FromBase64String(s["base64:".Length..]);
                         var ext = ".bin";
-                        if (bytes.Length > 24 &&
-                            bytes[0] == 0x04 && bytes[1] == 0x52 && bytes[2] == 0xE3 && bytes[3] == 0x0B &&
-                            bytes[4] == 0x91 && bytes[5] == 0x8F && bytes[6] == 0xCE && bytes[7] == 0x11 &&
-                            bytes[8] == 0x9D && bytes[9] == 0xE3 && bytes[10] == 0x00 && bytes[11] == 0xAA &&
-                            bytes[12] == 0x00 && bytes[13] == 0x4B && bytes[14] == 0xB8 && bytes[15] == 0x51 &&
-                            bytes[16] == 0x6C && bytes[17] == 0x74 && bytes[18] == 0x00 && bytes[19] == 0x00)
+                        if (MsFormsFactoryBinary.IsNativePictureStream(bytes))
                         {
                             bytes = bytes[24..];
                         }

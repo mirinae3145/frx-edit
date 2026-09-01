@@ -7,16 +7,23 @@ internal static class GeneratedUserFormFactory
         string caption,
         double widthPt,
         double heightPt,
-        string frxFileName)
+        string frxFileName,
+        uint? formBooleanProperties = null,
+        int? formGroupCount = null)
     {
+        if (formGroupCount is < 0)
+        {
+            throw new CliException($"Property 'formGroupCount' for '{formName}' must be a non-negative 32-bit integer.");
+        }
+
         var width = ToRawPoints(widthPt);
         var height = ToRawPoints(heightPt);
-        var ole = CompoundStorageRebuilder.BuildFromDump(BuildDump(width, height));
+        var ole = CompoundStorageRebuilder.BuildFromDump(BuildDump(width, height, formBooleanProperties, formGroupCount));
         var frx = BuildFrxWrapper(ole, widthPt, heightPt);
         return (frx, BuildFrm(formName, caption, widthPt, heightPt, frxFileName));
     }
 
-    private static CompoundStorageDump BuildDump(int width, int height)
+    private static CompoundStorageDump BuildDump(int width, int height, uint? formBooleanProperties, int? formGroupCount)
     {
         var root = new StorageEntryDump(
             0,
@@ -41,16 +48,24 @@ internal static class GeneratedUserFormFactory
             0,
             [
                 root,
-                CreateStream("Root Entry/f", "f", BuildRootFormStream(width, height)),
+                CreateStream("Root Entry/f", "f", BuildRootFormStream(width, height, formBooleanProperties, formGroupCount)),
                 CreateStream("Root Entry/o", "o", []),
                 CreateStream("Root Entry/\u0001CompObj", "\u0001CompObj", MsFormsCompObjFactory.Form)
             ]);
     }
 
-    private static byte[] BuildRootFormStream(int width, int height)
+    private static byte[] BuildRootFormStream(int width, int height, uint? formBooleanProperties, int? formGroupCount)
     {
         using var dataBlock = new MemoryStream();
         MsFormsFactoryBinary.WriteUInt32(dataBlock, 1);
+        if (formBooleanProperties is not null)
+        {
+            MsFormsFactoryBinary.WriteUInt32(dataBlock, formBooleanProperties.Value);
+        }
+        if (formGroupCount is not null)
+        {
+            MsFormsFactoryBinary.WriteInt32(dataBlock, formGroupCount.Value);
+        }
         MsFormsFactoryBinary.WriteUInt32(dataBlock, 1);
         MsFormsFactoryBinary.WriteUInt32(dataBlock, 32_000);
 
@@ -62,7 +77,10 @@ internal static class GeneratedUserFormFactory
         formControl.WriteByte(0);
         formControl.WriteByte(4);
         MsFormsFactoryBinary.WriteUInt16(formControl, checked((ushort)(4 + dataBlock.Length + extra.Length)));
-        MsFormsFactoryBinary.WriteUInt32(formControl, 0x0C00_0C08);
+        var propMask = 0x0C00_0C08u |
+                       (formBooleanProperties is null ? 0u : 1u << 6) |
+                       (formGroupCount is null ? 0u : 1u << 13);
+        MsFormsFactoryBinary.WriteUInt32(formControl, propMask);
         formControl.Write(dataBlock.ToArray());
         formControl.Write(extra.ToArray());
 

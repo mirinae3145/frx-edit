@@ -225,12 +225,17 @@ internal sealed class UserFormProject
         return result;
     }
 
-    public static string SynchronizeFormProperties(string frmText, Dictionary<string, object?>? frxFormControl)
+    public static string SynchronizeFormProperties(
+        string frmText,
+        IReadOnlyDictionary<string, object?>? effectiveFormProperties,
+        IReadOnlyCollection<string>? requestedPropertyNames)
     {
-        if (frxFormControl is null)
+        if (effectiveFormProperties is null || requestedPropertyNames is null || requestedPropertyNames.Count == 0)
         {
             return frmText;
         }
+
+        var requested = requestedPropertyNames.ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         var beginMatch = Regex.Match(frmText, @"^Begin\s+\{[^}]+\}\s+\w+\s*$", RegexOptions.Multiline);
         if (!beginMatch.Success)
@@ -263,26 +268,33 @@ internal sealed class UserFormProject
         var rootPropsText = frmText[startIdx..endIdxOfProperties];
         var newline = rootPropsText.Contains("\r\n") ? "\r\n" : "\n";
 
-        // 1. Sync Caption (formCaption)
-        if (frxFormControl.TryGetValue("formCaption", out var captionVal) && captionVal is string captionStr)
+        // A VBA UserForm's textual Caption and client dimensions are independent
+        // from the binary FormControl caption/displayed-size fields.
+        if (requested.Contains("caption") &&
+            effectiveFormProperties.TryGetValue("Caption", out var captionVal) &&
+            captionVal is string captionStr)
         {
             var captionRegex = new Regex(@"^(\s*)Caption(\s*)=.*$", RegexOptions.Multiline | RegexOptions.IgnoreCase);
+            var escapedCaption = captionStr.Replace("\"", "\"\"", StringComparison.Ordinal);
             if (captionRegex.IsMatch(rootPropsText))
             {
-                rootPropsText = captionRegex.Replace(rootPropsText, $"$1Caption$2=   \"{captionStr}\"");
+                rootPropsText = captionRegex.Replace(rootPropsText, match =>
+                    $"{match.Groups[1].Value}Caption{match.Groups[2].Value}=   \"{escapedCaption}\"");
             }
             else
             {
                 rootPropsText = rootPropsText.TrimEnd('\r', '\n');
-                rootPropsText += $"{newline}   Caption         =   \"{captionStr}\"";
+                rootPropsText += $"{newline}   Caption         =   \"{escapedCaption}\"";
             }
         }
 
         void SyncNumericProperty(string frmKey, string frxKey, bool isBoolean = false)
         {
-            if (frxFormControl.TryGetValue(frxKey, out var val) && val is not null)
+            if (effectiveFormProperties.TryGetValue(frxKey, out var val) && val is not null)
             {
-                var formatted = val.ToString();
+                var formatted = val is IFormattable formattable
+                    ? formattable.ToString(null, System.Globalization.CultureInfo.InvariantCulture)
+                    : val.ToString();
                 if (isBoolean)
                 {
                     if (val is bool b) formatted = b ? "1  'True" : "0   'False";
@@ -304,12 +316,14 @@ internal sealed class UserFormProject
 
         void SyncStringProperty(string frmKey, string frxKey)
         {
-            if (frxFormControl.TryGetValue(frxKey, out var val) && val is string str)
+            if (effectiveFormProperties.TryGetValue(frxKey, out var val) && val is string str)
             {
+                str = str.Replace("\"", "\"\"", StringComparison.Ordinal);
                 var regex = new Regex($@"^(\s*){frmKey}(\s*)=.*$", RegexOptions.Multiline | RegexOptions.IgnoreCase);
                 if (regex.IsMatch(rootPropsText))
                 {
-                    rootPropsText = regex.Replace(rootPropsText, $"$1{frmKey}$2=   \"{str}\"");
+                    rootPropsText = regex.Replace(rootPropsText, match =>
+                        $"{match.Groups[1].Value}{frmKey}{match.Groups[2].Value}=   \"{str}\"");
                 }
                 else
                 {
@@ -319,38 +333,20 @@ internal sealed class UserFormProject
             }
         }
 
-        // Helper to convert Pt value to Twips and sync
-        void SyncPtProperty(string frmKey, string frxKey)
-        {
-            if (frxFormControl.TryGetValue(frxKey, out var val) && val is not null)
-            {
-                var pt = Convert.ToDouble(val);
-                var twips = Math.Round(pt * 20.0, 3);
-                var formatted = twips.ToString(System.Globalization.CultureInfo.InvariantCulture);
-                var regex = new Regex($@"^(\s*){frmKey}(\s*)=.*$", RegexOptions.Multiline | RegexOptions.IgnoreCase);
-                if (regex.IsMatch(rootPropsText))
-                {
-                    rootPropsText = regex.Replace(rootPropsText, $"$1{frmKey}$2=   {formatted}");
-                }
-                else
-                {
-                    rootPropsText = rootPropsText.TrimEnd('\r', '\n');
-                    rootPropsText += $"{newline}   {frmKey,-15} =   {formatted}";
-                }
-            }
-        }
-
-        SyncPtProperty("ClientHeight", "displayedHeightPt");
-        SyncPtProperty("ClientWidth", "displayedWidthPt");
-        SyncNumericProperty("Left", "Left");
-        SyncNumericProperty("Top", "Top");
-        SyncNumericProperty("Width", "Width");
-        SyncNumericProperty("Height", "Height");
-        SyncNumericProperty("ClientLeft", "ClientLeft");
-        SyncNumericProperty("ClientTop", "ClientTop");
-        SyncNumericProperty("StartUpPosition", "StartUpPosition");
-        SyncNumericProperty("ShowModal", "ShowModal", isBoolean: true);
-        SyncStringProperty("Tag", "Tag");
+        if (requested.Contains("clientHeight")) SyncNumericProperty("ClientHeight", "ClientHeight");
+        if (requested.Contains("clientWidth")) SyncNumericProperty("ClientWidth", "ClientWidth");
+        if (requested.Contains("left")) SyncNumericProperty("Left", "Left");
+        if (requested.Contains("top")) SyncNumericProperty("Top", "Top");
+        if (requested.Contains("width")) SyncNumericProperty("Width", "Width");
+        if (requested.Contains("height")) SyncNumericProperty("Height", "Height");
+        if (requested.Contains("clientLeft")) SyncNumericProperty("ClientLeft", "ClientLeft");
+        if (requested.Contains("clientTop")) SyncNumericProperty("ClientTop", "ClientTop");
+        if (requested.Contains("startUpPosition")) SyncNumericProperty("StartUpPosition", "StartUpPosition");
+        if (requested.Contains("showModal")) SyncNumericProperty("ShowModal", "ShowModal", isBoolean: true);
+        if (requested.Contains("whatsThisButton")) SyncNumericProperty("WhatsThisButton", "WhatsThisButton", isBoolean: true);
+        if (requested.Contains("whatsThisHelp")) SyncNumericProperty("WhatsThisHelp", "WhatsThisHelp", isBoolean: true);
+        if (requested.Contains("drawBuffer")) SyncNumericProperty("DrawBuffer", "DrawBuffer");
+        if (requested.Contains("tag")) SyncStringProperty("Tag", "Tag");
 
         return frmText[..startIdx] + rootPropsText + frmText[endIdxOfProperties..];
     }

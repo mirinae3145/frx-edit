@@ -6,6 +6,15 @@ internal static class ObjectStreamRoundTripRewriter
         ObjectStreamRewriteMode mode = ObjectStreamRewriteMode.RoundTrip,
         WriterProvenanceAuditCollector? writerAudit = null)
     {
+        var reconstructionIntent = mode == ObjectStreamRewriteMode.FormAndObjectPatch
+            ? ReconstructionIntentRegistry.Get(layout)
+            : null;
+        var hasMultiPageChanges = reconstructionIntent?.MultiPageControls.Count > 0;
+        var hasContainerFormChanges = reconstructionIntent is not null && layout.Controls.Any(control =>
+            reconstructionIntent.ObjectControls.Contains(control.Name) &&
+            IsContainerControl(control) &&
+            control.Properties is not null &&
+            !IsAddedControl(control.Properties));
         var hasGeneratedStorageStreams = LayoutHasGeneratedStorageStreams(layout);
         if (mode == ObjectStreamRewriteMode.FormAndObjectPatch && hasGeneratedStorageStreams)
         {
@@ -42,8 +51,16 @@ internal static class ObjectStreamRoundTripRewriter
             additionsByObjectStreamPath.Count == 0 &&
             removalsByObjectStreamPath.Count == 0 &&
             !hasFormSiteChanges &&
-            !hasGeneratedStorageStreams)
+            !hasGeneratedStorageStreams &&
+            !hasMultiPageChanges &&
+            !hasContainerFormChanges &&
+            !(reconstructionIntent?.RootBinaryChanged ?? false))
         {
+            if (reconstructionIntent is not null)
+            {
+                return dump;
+            }
+
             if (mode != ObjectStreamRewriteMode.RoundTrip && LayoutHasObjectPayloads(layout))
             {
                 throw new CliException($"Object stream rebuild mode '{mode}' found no object slices even though the parsed layout contains object payload metadata. This usually means a numeric metadata type was not recognized by TryGetInt.");
@@ -64,6 +81,7 @@ internal static class ObjectStreamRoundTripRewriter
             }
 
             if (mode == ObjectStreamRewriteMode.FormAndObjectPatch &&
+                (reconstructionIntent is null || hasMultiPageChanges) &&
                 TryRewriteMultiPageInnerTabStripStream(stream, layout, sizeUpdates, out var rewrittenTabStripStream))
             {
                 rewrittenObjectStreams[stream.Path] = rewrittenTabStripStream;
@@ -96,7 +114,12 @@ internal static class ObjectStreamRoundTripRewriter
                 "ObjectStreamRoundTripRewriter.RewriteObjectStream");
         }
 
-        if (rewrittenObjectStreams.Count == 0 && !hasFormSiteChanges && !hasGeneratedStorageStreams)
+        if (rewrittenObjectStreams.Count == 0 &&
+            !hasFormSiteChanges &&
+            !hasGeneratedStorageStreams &&
+            !hasMultiPageChanges &&
+            !hasContainerFormChanges &&
+            !(reconstructionIntent?.RootBinaryChanged ?? false))
         {
             if (mode != ObjectStreamRewriteMode.RoundTrip)
             {
@@ -162,7 +185,9 @@ internal static class ObjectStreamRoundTripRewriter
                     isRootFormStream = true;
                 }
 
-                if (isRootFormStream && layout.FrxFormControl is not null)
+                if (isRootFormStream &&
+                    layout.FrxFormControl is not null &&
+                    (reconstructionIntent is null || reconstructionIntent.RootBinaryChanged))
                 {
                     if (layout.FrxFormControl.TryGetValue("formCaption", out var captionVal) && captionVal is string captionStr)
                     {
@@ -174,6 +199,25 @@ internal static class ObjectStreamRoundTripRewriter
                     changed = true;
                 }
 
+                if (!isRootFormStream && reconstructionIntent is not null)
+                {
+                    var container = layout.Controls.FirstOrDefault(control =>
+                        reconstructionIntent.ObjectControls.Contains(control.Name) &&
+                        IsOwnedContainerFormStream(control, stream.Path));
+                    if (container?.Properties is not null && !IsAddedControl(container.Properties))
+                    {
+                        if (container.Properties.TryGetValue("formCaption", out var captionValue) &&
+                            captionValue is string caption)
+                        {
+                            patched = PatchRootFormCaption(patched, container.Properties, caption);
+                        }
+
+                        var tempStream = stream with { Data = patched };
+                        PatchRootFormScalars(tempStream, container.Properties, patched);
+                        changed = true;
+                    }
+                }
+
                 if (changed)
                 {
                     writerAudit?.RecordStreamRewrite(
@@ -181,12 +225,13 @@ internal static class ObjectStreamRoundTripRewriter
                         stream.Path,
                         stream.Data,
                         patched,
-                        "ObjectStreamRoundTripRewriter.RewriteFormSiteData / PatchRootFormScalars");
+                        "ObjectStreamRoundTripRewriter.RewriteFormSiteData / PatchFormControlScalars");
                     return WithNewData(stream, patched);
                 }
             }
 
             if (mode == ObjectStreamRewriteMode.FormAndObjectPatch &&
+                (reconstructionIntent is null || hasMultiPageChanges) &&
                 !string.IsNullOrWhiteSpace(stream.Path) &&
                 stream.Kind.Equals("Stream", StringComparison.OrdinalIgnoreCase) &&
                 stream.Name.Equals("x", StringComparison.OrdinalIgnoreCase) &&
@@ -209,7 +254,9 @@ internal static class ObjectStreamRoundTripRewriter
 
     private static bool LayoutHasFormSiteChanges(LayoutInspection layout) =>
         layout.Controls.Any(control => control.Properties is not null && IsAddedControl(control.Properties)) ||
-        (layout.RemovedControls?.Count > 0);
+        (layout.RemovedControls?.Count > 0) ||
+        (ReconstructionIntentRegistry.Get(layout)?.SiteControls.Count > 0) ||
+        (ReconstructionIntentRegistry.Get(layout)?.StructuralChanged ?? false);
 
     private static bool LayoutHasGeneratedStorageStreams(LayoutInspection layout) =>
         layout.Controls.Any(control => control.Properties is not null &&
@@ -489,11 +536,16 @@ internal static class ObjectStreamRoundTripRewriter
             return false;
         }
 
-        var captionsBytes = SerializeArrayString(pages, props, "tabCaptions", GetPageCaption);
-        var tooltipsBytes = SerializeArrayString(pages, props, "tabTooltips", p => "");
-        var namesBytes = SerializeArrayString(pages, props, "tabNames", p => p.Name, alwaysUseFallback: true);
-        var tagsBytes = SerializeArrayString(pages, props, "tabTags", p => "");
-        var acceleratorsBytes = SerializeArrayString(pages, props, "tabAccelerators", p => "");
+        var effectiveCaptions = GetEffectiveTabStrings(multiPage.Properties, "tabCaptions", pages.Count);
+        var effectiveTooltips = GetEffectiveTabStrings(multiPage.Properties, "tabTooltips", pages.Count);
+        var effectiveNames = GetEffectiveTabStrings(multiPage.Properties, "tabNames", pages.Count);
+        var effectiveTags = GetEffectiveTabStrings(multiPage.Properties, "tabTags", pages.Count);
+        var effectiveAccelerators = GetEffectiveTabStrings(multiPage.Properties, "tabAccelerators", pages.Count);
+        var captionsBytes = SerializeArrayString(pages, props, "tabCaptions", GetPageCaption, effectiveCaptions);
+        var tooltipsBytes = SerializeArrayString(pages, props, "tabTooltips", p => "", effectiveTooltips);
+        var namesBytes = SerializeArrayString(pages, props, "tabNames", p => p.Name, effectiveNames, alwaysUseFallback: true);
+        var tagsBytes = SerializeArrayString(pages, props, "tabTags", p => "", effectiveTags);
+        var acceleratorsBytes = SerializeArrayString(pages, props, "tabAccelerators", p => "", effectiveAccelerators);
 
         var extraDataBytes = new MemoryStream();
         if (TryGetString(props, "sizeSource", out var sizeSource) && sizeSource == "tabStripExtraDataBlock")
@@ -531,6 +583,20 @@ internal static class ObjectStreamRoundTripRewriter
             BinaryPrimitives.WriteInt32LittleEndian(dataBlock.AsSpan(listIndexOffset, 4), selectedPageIndex);
         }
 
+        var hasRequestedTabStyle = TryGetInt(multiPage.Properties, "tabStyle", out var requestedTabStyle) ||
+                                   TryGetInt(multiPage.Properties, "style", out requestedTabStyle);
+        if (hasRequestedTabStyle)
+        {
+            if (!TryGetInt(props, "tabStyleLocalOffset", out var tabStyleOffset) ||
+                tabStyleOffset < 0 || tabStyleOffset + 4 > dataBlock.Length)
+            {
+                throw new CliException(
+                    $"Cannot rewrite MultiPage TabStrip '{oStream.Path}': the existing stream has no writable tabStyle field.");
+            }
+
+            BinaryPrimitives.WriteInt32LittleEndian(dataBlock.AsSpan(tabStyleOffset, 4), requestedTabStyle);
+        }
+
         if (TryGetInt(props, "itemsSizeLocalOffset", out var itemsSizeOffset)) BinaryPrimitives.WriteUInt32LittleEndian(dataBlock.AsSpan(itemsSizeOffset, 4), (uint)captionsBytes.Length);
         if (TryGetInt(props, "tipStringsSizeLocalOffset", out var tipStringsSizeOffset)) BinaryPrimitives.WriteUInt32LittleEndian(dataBlock.AsSpan(tipStringsSizeOffset, 4), (uint)tooltipsBytes.Length);
         if (TryGetInt(props, "namesSizeLocalOffset", out var namesSizeOffset)) BinaryPrimitives.WriteUInt32LittleEndian(dataBlock.AsSpan(namesSizeOffset, 4), (uint)namesBytes.Length);
@@ -554,30 +620,42 @@ internal static class ObjectStreamRoundTripRewriter
             newStream.Write(oStream.Data, streamDataStart, streamDataEnd - streamDataStart);
         }
 
-        if (TryGetInt(props, "textPropsExpectedLocalOffset", out var textPropsStart) &&
-            TryGetInt(props, "textPropsEndLocalOffset", out var textPropsEnd))
+        if (MultiPageTextPropsChanged(multiPage.Properties, props))
+        {
+            var textProps = TextPropsFactory.Build(multiPage.Properties, TextPropsFactory.CommandButtonMask);
+            newStream.Write(textProps);
+        }
+        else if (TryGetInt(props, "textPropsExpectedLocalOffset", out var textPropsStart) &&
+                 TryGetInt(props, "textPropsEndLocalOffset", out var textPropsEnd))
         {
             newStream.Write(oStream.Data, textPropsStart, textPropsEnd - textPropsStart);
         }
 
-        var defaultFlag = 3u;
-        if (TryGetObjectList(props, "tabFlags", out var originalFlags) && originalFlags.Count > 0 &&
-            TryGetInt(originalFlags[0], "raw", out var firstRaw))
+        var originalFlagValues = GetTabFlagValues(props, "tabFlags") ?? [];
+        var effectiveFlagValues = GetTabFlagValues(multiPage.Properties, "tabFlags");
+        if (effectiveFlagValues is not null && effectiveFlagValues.Count != pages.Count)
         {
-            defaultFlag = (uint)firstRaw;
+            throw new CliException($"Cannot rewrite MultiPage TabStrip '{oStream.Path}': tabFlags contains {effectiveFlagValues.Count} entries; expected {pages.Count}.");
         }
 
-        foreach (var page in pages)
+        var defaultFlag = 3u;
+        if (originalFlagValues.Count > 0)
         {
-            var flag = defaultFlag;
-            if (page.Properties is not null &&
+            defaultFlag = originalFlagValues[0];
+        }
+
+        for (var pageIndex = 0; pageIndex < pages.Count; pageIndex++)
+        {
+            var page = pages[pageIndex];
+            var flag = effectiveFlagValues is not null ? effectiveFlagValues[pageIndex] : defaultFlag;
+            if (effectiveFlagValues is null &&
+                page.Properties is not null &&
                 !IsAddedControl(page.Properties) &&
                 TryGetInt(page.Properties, "multiPagePageIndex", out var originalIdx))
             {
-                if (TryGetObjectList(props, "tabFlags", out var flags) && originalIdx < flags.Count)
+                if (originalIdx >= 0 && originalIdx < originalFlagValues.Count)
                 {
-                    if (TryGetInt(flags[originalIdx], "raw", out var rawFlag))
-                        flag = (uint)rawFlag;
+                    flag = originalFlagValues[originalIdx];
                 }
             }
             var buffer = new byte[4];
@@ -589,7 +667,12 @@ internal static class ObjectStreamRoundTripRewriter
 
         var multiPageStoragePath = oStream.Path.Substring(0, oStream.Path.Length - 2);
         var fPath = $"{multiPageStoragePath}/f";
-        sizeUpdates.Add(new ObjectStreamSizeUpdate("__internal_site_0_TabStrip", fPath, 0, rewritten.Length));
+        if (!TryGetInt(multiPage.Properties, "multiPageTabStripSiteObjectStreamSizeOffset", out var objectSizeOffset))
+        {
+            throw new CliException(
+                $"Cannot rewrite MultiPage TabStrip '{oStream.Path}': missing its FormSite ObjectStreamSize offset.");
+        }
+        sizeUpdates.Add(new ObjectStreamSizeUpdate("__internal_site_0_TabStrip", fPath, objectSizeOffset, rewritten.Length));
 
         return true;
     }
@@ -599,6 +682,7 @@ internal static class ObjectStreamRoundTripRewriter
         Dictionary<string, object?> tabStripProps,
         string propertyName,
         Func<ControlInfo, string> fallback,
+        IReadOnlyList<string>? effectiveValues,
         bool alwaysUseFallback = false)
     {
         var entries = new List<Dictionary<string, object?>>();
@@ -608,17 +692,23 @@ internal static class ObjectStreamRoundTripRewriter
         }
 
         var stream = new MemoryStream();
-        if (entries.Count == 0) return stream.ToArray();
-
-        foreach (var page in pages)
+        if (entries.Count == 0 && effectiveValues is null) return stream.ToArray();
+        if (effectiveValues is not null && effectiveValues.Count != pages.Count)
         {
-            string value = fallback(page);
+            throw new CliException($"MultiPage property '{propertyName}' contains {effectiveValues.Count} entries; expected {pages.Count}.");
+        }
+
+        for (var pageIndex = 0; pageIndex < pages.Count; pageIndex++)
+        {
+            var page = pages[pageIndex];
+            string value = effectiveValues is null ? fallback(page) : effectiveValues[pageIndex];
             bool compressed = true;
 
             var hasExplicitCaption = propertyName.Equals("tabCaptions", StringComparison.OrdinalIgnoreCase) &&
                 page.Properties is not null &&
                 (page.Properties.ContainsKey("caption") || page.Properties.ContainsKey("tabCaption"));
-            if (!alwaysUseFallback &&
+            if (effectiveValues is null &&
+                !alwaysUseFallback &&
                 !hasExplicitCaption &&
                 page.Properties is not null &&
                 !IsAddedControl(page.Properties) &&
@@ -627,6 +717,19 @@ internal static class ObjectStreamRoundTripRewriter
             {
                 if (TryGetString(entries[idx], "value", out var originalValue)) value = originalValue;
                 if (TryGetBool(entries[idx], "compressed", out var originalComp)) compressed = originalComp;
+            }
+            else if (page.Properties is not null &&
+                     !IsAddedControl(page.Properties) &&
+                     TryGetInt(page.Properties, "multiPagePageIndex", out var compressionIndex) &&
+                     compressionIndex >= 0 && compressionIndex < entries.Count &&
+                     TryGetBool(entries[compressionIndex], "compressed", out var originalCompression))
+            {
+                compressed = originalCompression;
+            }
+
+            if (compressed && value.Any(character => character > byte.MaxValue))
+            {
+                compressed = false;
             }
 
             var encoded = compressed ? Encoding.Latin1.GetBytes(value) : Encoding.Unicode.GetBytes(value);
@@ -646,6 +749,24 @@ internal static class ObjectStreamRoundTripRewriter
             }
         }
         return stream.ToArray();
+    }
+
+    private static IReadOnlyList<string>? GetEffectiveTabStrings(
+        Dictionary<string, object?> properties,
+        string propertyName,
+        int expectedCount)
+    {
+        if (!TryGetStringList(properties, propertyName, out var values))
+        {
+            return null;
+        }
+
+        if (values.Count != expectedCount)
+        {
+            throw new CliException($"MultiPage property '{propertyName}' contains {values.Count} entries; expected {expectedCount}.");
+        }
+
+        return values;
     }
 
     private static bool MultiPagePageIdentityChanged(
@@ -680,12 +801,6 @@ internal static class ObjectStreamRoundTripRewriter
             return true;
         }
 
-        if (TryGetStringList(tabStripProperties, "tabNames", out var originalNames) &&
-            !originalNames.SequenceEqual(pages.Select(page => page.Name), StringComparer.Ordinal))
-        {
-            return true;
-        }
-
         if (TryGetStringList(tabStripProperties, "tabCaptions", out var originalCaptions))
         {
             for (var i = 0; i < pages.Count && i < originalCaptions.Count; i++)
@@ -700,9 +815,64 @@ internal static class ObjectStreamRoundTripRewriter
             }
         }
 
+        foreach (var propertyName in new[] { "tabCaptions", "tabTooltips", "tabNames", "tabTags", "tabAccelerators" })
+        {
+            if (TryGetStringList(multiPage.Properties!, propertyName, out var requestedValues) &&
+                (!TryGetStringList(tabStripProperties, propertyName, out var originalValues) ||
+                 !requestedValues.SequenceEqual(originalValues, StringComparer.Ordinal)))
+            {
+                return true;
+            }
+        }
+
+        var requestedFlags = GetTabFlagValues(multiPage.Properties!, "tabFlags");
+        var originalFlags = GetTabFlagValues(tabStripProperties, "tabFlags");
+        if (requestedFlags is not null &&
+            (originalFlags is null || !requestedFlags.SequenceEqual(originalFlags)))
+        {
+            return true;
+        }
+
+        var hasRequestedStyle = TryGetInt(multiPage.Properties!, "tabStyle", out var requestedStyle) ||
+                                TryGetInt(multiPage.Properties!, "style", out requestedStyle);
+        if (hasRequestedStyle &&
+            (!TryGetInt(tabStripProperties, "tabStyle", out var originalStyle) || requestedStyle != originalStyle))
+        {
+            return true;
+        }
+
+        if (MultiPageTextPropsChanged(multiPage.Properties!, tabStripProperties))
+        {
+            return true;
+        }
+
         return TryGetInt(multiPage.Properties!, "value", out var selectedPageIndex) &&
             TryGetInt(tabStripProperties, "listIndex", out var originalSelectedPageIndex) &&
             selectedPageIndex != originalSelectedPageIndex;
+    }
+
+    private static bool MultiPageTextPropsChanged(
+        Dictionary<string, object?> requested,
+        Dictionary<string, object?> original)
+    {
+        foreach (var propertyName in new[]
+                 {
+                     "fontName", "fontSize", "fontSizeRaw", "fontEffects", "fontEffectsHex", "fontWeight",
+                     "fontBold", "fontItalic", "fontUnderline", "fontStrikethrough", "fontCharSet",
+                     "fontPitchAndFamily", "paragraphAlign", "textAlign"
+                 })
+        {
+            var requestedPresent = requested.TryGetValue(propertyName, out var requestedValue);
+            var originalPresent = original.TryGetValue(propertyName, out var originalValue);
+            if (requestedPresent != originalPresent ||
+                (requestedPresent && !JsonSerializer.Serialize(requestedValue, FrxEditApp.JsonOptions)
+                    .Equals(JsonSerializer.Serialize(originalValue, FrxEditApp.JsonOptions), StringComparison.Ordinal)))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static (int Start, int Length) TryGetFirstPagePropertiesSlice(ControlInfo multiPage, IReadOnlyList<ControlInfo> pages, byte[] xStream)
@@ -845,6 +1015,31 @@ internal static class ObjectStreamRoundTripRewriter
         return false;
     }
 
+    private static IReadOnlyList<uint>? GetTabFlagValues(Dictionary<string, object?> properties, string name)
+    {
+        if (MsFormsFactoryBinary.GetUInt32List(properties, name) is { } directValues)
+        {
+            return directValues;
+        }
+
+        if (!TryGetObjectList(properties, name, out var objects))
+        {
+            return null;
+        }
+
+        var values = new List<uint>(objects.Count);
+        foreach (var entry in objects)
+        {
+            if (MsFormsFactoryBinary.GetUInt32(entry, "raw") is not uint raw)
+            {
+                return null;
+            }
+            values.Add(raw);
+        }
+
+        return values;
+    }
+
     private static bool TryGetUInt32List(Dictionary<string, object?> properties, string name, out List<uint> values)
     {
         values = [];
@@ -924,6 +1119,9 @@ internal static class ObjectStreamRoundTripRewriter
         {
             if (control.Properties is null ||
                 IsGeneratedFormSiteAlreadyMaterialized(control.Properties) ||
+                (ReconstructionIntentRegistry.Get(layout) is { } intent &&
+                 !IsAddedControl(control.Properties) &&
+                 !intent.SiteControls.Contains(control.Name)) ||
                 !TryGetString(control.Properties, "streamPath", out var streamPath) ||
                 string.IsNullOrWhiteSpace(streamPath))
             {
@@ -1108,10 +1306,13 @@ internal static class ObjectStreamRoundTripRewriter
             PatchSiteDataCountOfSites(rebuilt, referenceControl, countDelta, formStream.Path);
         }
 
-        PatchNextAvailableId(rebuilt, allOriginalSlices
-            .Where(slice => !slice.IsRemoval)
-            .Select(slice => slice.Control)
-            .Concat(additions.Select(addition => addition.Control)));
+        if (additions.Count > 0 || removals.Count > 0)
+        {
+            PatchNextAvailableId(rebuilt, allOriginalSlices
+                .Where(slice => !slice.IsRemoval)
+                .Select(slice => slice.Control)
+                .Concat(additions.Select(addition => addition.Control)));
+        }
 
         return rebuilt;
     }
@@ -1248,7 +1449,9 @@ internal static class ObjectStreamRoundTripRewriter
         }
 
         var propMask = BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(4, 4));
-        if (propMask != 0x081A_0C40)
+        const uint optionalFrameProperties = 0x000A_0000; // SpecialEffect and Caption.
+        const uint emptyFrameProperties = 0x0810_0C40;
+        if ((propMask & ~optionalFrameProperties) != emptyFrameProperties)
         {
             return false;
         }
@@ -1278,7 +1481,7 @@ internal static class ObjectStreamRoundTripRewriter
         using var output = new MemoryStream();
         output.Write(data, 0, 2);
         MsFormsFactoryBinary.WriteUInt16(output, checked((ushort)(cbForm + 8)));
-        MsFormsFactoryBinary.WriteUInt32(output, 0x0C1A_0C48);
+        MsFormsFactoryBinary.WriteUInt32(output, propMask | 0x0400_0008); // NextAvailableId and ShapeCookie.
         MsFormsFactoryBinary.WriteUInt32(output, checked((uint)Math.Max(nextAvailableId, 1)));
         output.Write(data, 8, drawBufferOffset - 8);
         MsFormsFactoryBinary.WriteUInt32(output, 1);
@@ -2192,6 +2395,23 @@ internal static class ObjectStreamRoundTripRewriter
     private static bool IsAddedControl(Dictionary<string, object?> props) =>
         TryGetBool(props, "isAddedControl", out var isAdded) && isAdded;
 
+    private static bool IsContainerControl(ControlInfo control) =>
+        control.Type.Equals("Frame", StringComparison.OrdinalIgnoreCase) ||
+        control.Type.Equals("MultiPage", StringComparison.OrdinalIgnoreCase) ||
+        control.Type.Equals("Page", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsOwnedContainerFormStream(ControlInfo control, string? streamPath)
+    {
+        if (!IsContainerControl(control) || control.Properties is null || string.IsNullOrWhiteSpace(streamPath) ||
+            !TryGetString(control.Properties, "ownedStoragePath", out var ownedStoragePath) ||
+            string.IsNullOrWhiteSpace(ownedStoragePath))
+        {
+            return false;
+        }
+
+        return streamPath.Equals($"{ownedStoragePath}/f", StringComparison.OrdinalIgnoreCase);
+    }
+
     private static bool IsGeneratedFormSiteAlreadyMaterialized(Dictionary<string, object?> props) =>
         TryGetBool(props, "generatedFormSiteAlreadyMaterialized", out var isMaterialized) && isMaterialized;
 
@@ -2209,6 +2429,12 @@ internal static class ObjectStreamRoundTripRewriter
         {
             var props = control.Properties;
             if (props is null || IsAddedControl(props))
+            {
+                continue;
+            }
+
+            if (ReconstructionIntentRegistry.Get(layout) is { } intent &&
+                !intent.ObjectControls.Contains(control.Name))
             {
                 continue;
             }
@@ -2708,6 +2934,18 @@ internal static class ObjectStreamRoundTripRewriter
 
     private static void PatchRootFormScalars(StorageEntryDump formStream, Dictionary<string, object?> props, byte[] output)
     {
+        if (MsFormsFactoryBinary.GetUInt32(props, "formBooleanProperties") is { } formBooleanProperties &&
+            TryGetInt(props, "formBooleanPropertiesRawOffset", out var formBooleanPropertiesOffset))
+        {
+            WriteUInt32ByFileOffset(formStream, output, formBooleanPropertiesOffset, formBooleanProperties, "formBooleanProperties");
+        }
+
+        if (MsFormsFactoryBinary.GetUInt32(props, "formDrawBuffer") is { } formDrawBuffer &&
+            TryGetInt(props, "formDrawBufferOffset", out var formDrawBufferOffset))
+        {
+            WriteUInt32ByFileOffset(formStream, output, formDrawBufferOffset, formDrawBuffer, "formDrawBuffer");
+        }
+
         if (props.TryGetValue("formBackColor", out var backColorVal) && backColorVal is string backColorStr &&
             TryGetInt(props, "formBackColorRawOffset", out var backColorOffset))
         {
@@ -2733,6 +2971,12 @@ internal static class ObjectStreamRoundTripRewriter
             TryGetInt(props, "nextAvailableIdOffset", out var nextAvailableIdOffset))
         {
             WriteUInt32ByFileOffset(formStream, output, nextAvailableIdOffset, (uint)nextAvailableId, "nextAvailableId");
+        }
+
+        if (TryGetInt(props, "formGroupCount", out var formGroupCount) &&
+            TryGetInt(props, "formGroupCountOffset", out var formGroupCountOffset))
+        {
+            WriteInt32ByFileOffset(formStream, output, formGroupCountOffset, formGroupCount, "formGroupCount");
         }
 
         if (TryGetInt(props, "formBorderStyle", out var formBorderStyle) &&
