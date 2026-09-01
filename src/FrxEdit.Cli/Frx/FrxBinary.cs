@@ -41,6 +41,16 @@ internal sealed class FrxBinary
         "ListBox",
         "CustButton",
     ];
+    private static readonly HashSet<string> InternalTabStripSemanticPropertyNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "listIndex", "backColor", "foreColor", "mousePointer", "tabOrientation", "tabStyle", "multiRow",
+        "tabFixedWidth", "tabFixedHeight", "tooltips", "enabled", "locked", "backStyle", "integralHeight",
+        "dragBehavior", "enterKeyBehavior", "enterFieldBehavior", "tabKeyBehavior", "wordWrap",
+        "selectionMargin", "autoWordSelect", "autoSize", "hideSelection", "autoTab", "multiLine", "imeMode",
+        "mouseIcon", "tabCaptions", "tabTooltips", "tabNames", "tabTags", "tabAccelerators", "tabFlags",
+        "fontName", "fontSize", "fontWeight", "fontCharSet", "fontPitchAndFamily", "fontItalic",
+        "fontUnderline", "fontStrikethrough"
+    };
 
     public required byte[] Bytes { get; init; }
     public required int OleOffset { get; init; }
@@ -354,6 +364,7 @@ internal sealed class FrxBinary
         var controls = new Dictionary<int, ControlInfo>();
         var controlsByStorageAndSiteId = new Dictionary<string, Dictionary<uint, string>>(StringComparer.OrdinalIgnoreCase);
         var formControlByOwner = new Dictionary<string, FormControlProperties>(StringComparer.OrdinalIgnoreCase);
+        var internalSitesByOwner = new List<(string Owner, StorageEntryDump Stream, SiteDescriptor Site)>();
         var pendingContainerOwners = new Queue<string>();
         var fStreams = storage.Streams
             .Where(s => s.Kind == "Stream" && s.Name == "f")
@@ -388,8 +399,15 @@ internal sealed class FrxBinary
             }
 
             var pairedOStream = FindPairedObjectStream(storage.Streams, stream);
-            var streamRecords = FormStreamParser.Read(stream, knownControlNames, pairedOStream, parserMode);
-            var streamControls = BuildControlInfos(streamRecords, streamOwner, controlScopes);
+            var streamResult = FormStreamParser.Read(stream, knownControlNames, pairedOStream, parserMode);
+            var streamControls = BuildControlInfos(streamResult.Controls, streamOwner, controlScopes);
+            if (streamOwner is not null)
+            {
+                foreach (var internalSite in streamResult.InternalSites)
+                {
+                    internalSitesByOwner.Add((streamOwner, stream, internalSite));
+                }
+            }
 
             foreach (var control in streamControls)
             {
@@ -433,6 +451,7 @@ internal sealed class FrxBinary
             }
         }
 
+        ApplyInternalTabStripProperties(controls, internalSitesByOwner);
         ApplyMultiPageXStreams(controls, storage.Streams, controlsByStorageAndSiteId);
         AnnotateStorageBackedControls(controls, storage.Streams);
 
@@ -830,6 +849,76 @@ internal sealed class FrxBinary
                 controls[pageKey] = MergeProperties(controls[pageKey], pageProperties);
             }
         }
+    }
+
+    private static void ApplyInternalTabStripProperties(
+        Dictionary<int, ControlInfo> controls,
+        IReadOnlyList<(string Owner, StorageEntryDump Stream, SiteDescriptor Site)> internalSites)
+    {
+        if (internalSites.Count == 0)
+        {
+            return;
+        }
+
+        var byName = controls.ToDictionary(pair => pair.Value.Name, pair => pair.Key, StringComparer.OrdinalIgnoreCase);
+        foreach (var (owner, stream, site) in internalSites)
+        {
+            if (!byName.TryGetValue(owner, out var ownerKey) ||
+                !controls[ownerKey].Type.Equals("MultiPage", StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(site.ControlType, "TabStrip", StringComparison.OrdinalIgnoreCase) ||
+                site.ObjectProperties is null)
+            {
+                continue;
+            }
+
+            var projected = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["multiPageTabStripParser"] = "msOFormsTabStrip",
+                ["multiPageTabStripType"] = "TabStrip",
+                ["multiPageTabStripStoragePath"] = stream.ParentPath,
+                ["multiPageTabStripLeft"] = site.Left,
+                ["multiPageTabStripTop"] = site.Top,
+                ["multiPageTabStripRawWidth"] = site.ObjectProperties.Width,
+                ["multiPageTabStripRawHeight"] = site.ObjectProperties.Height,
+                ["multiPageTabStripTabIndex"] = site.TabIndex
+            };
+
+            foreach (var (name, value) in site.ObjectProperties.Properties)
+            {
+                if (InternalTabStripSemanticPropertyNames.Contains(name))
+                {
+                    projected[name] = name.Equals("tabFlags", StringComparison.OrdinalIgnoreCase)
+                        ? NormalizeTabFlags(value)
+                        : value;
+                }
+            }
+
+            if (projected.TryGetValue("listIndex", out var listIndex))
+            {
+                projected["value"] = listIndex;
+            }
+            if (projected.TryGetValue("tabStyle", out var tabStyle))
+            {
+                projected["style"] = tabStyle;
+            }
+
+            controls[ownerKey] = MergeProperties(controls[ownerKey], projected);
+        }
+    }
+
+    private static object? NormalizeTabFlags(object? value)
+    {
+        if (value is not IEnumerable<Dictionary<string, object?>> flags)
+        {
+            return value;
+        }
+
+        return flags.Select(flag => new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["index"] = flag.TryGetValue("index", out var index) ? index : null,
+            ["visible"] = flag.TryGetValue("visible", out var visible) ? visible : null,
+            ["enabled"] = flag.TryGetValue("enabled", out var enabled) ? enabled : null
+        }).ToList();
     }
 
     private static ControlInfo MergeProperties(ControlInfo control, IReadOnlyDictionary<string, object?> propertiesToAdd)
