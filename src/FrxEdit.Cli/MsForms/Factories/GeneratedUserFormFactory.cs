@@ -123,7 +123,7 @@ internal static class GeneratedUserFormFactory
             "   ClientTop       =   465",
             $"   ClientWidth     =   {clientWidth}",
             $"   OleObjectBlob   =   \"{frxFileName}\":0000",
-            "   StartUpPosition =   1  'Centrar en propietario",
+            "   StartUpPosition =   1  'CenterOwner",
             "End",
             $"Attribute VB_Name = \"{formName}\"",
             "Attribute VB_GlobalNameSpace = False",
