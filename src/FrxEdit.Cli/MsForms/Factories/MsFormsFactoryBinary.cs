@@ -1,9 +1,21 @@
 internal static class MsFormsFactoryBinary
 {
+    private static ReadOnlySpan<byte> StdFontClsid =>
+    [
+        0x03, 0x52, 0xE3, 0x0B, 0x91, 0x8F, 0xCE, 0x11,
+        0x9D, 0xE3, 0x00, 0xAA, 0x00, 0x4B, 0xB8, 0x51
+    ];
+
     private static ReadOnlySpan<byte> StdPictureClsid =>
     [
         0x04, 0x52, 0xE3, 0x0B, 0x91, 0x8F, 0xCE, 0x11,
         0x9D, 0xE3, 0x00, 0xAA, 0x00, 0x4B, 0xB8, 0x51
+    ];
+
+    private static ReadOnlySpan<byte> TextPropsClsid =>
+    [
+        0x20, 0x09, 0xC2, 0xAF, 0x4E, 0xDA, 0xCE, 0x11,
+        0xB9, 0x43, 0x00, 0xAA, 0x00, 0x68, 0x87, 0xB4
     ];
 
     public static byte[] BuildVersionedControl(byte minor, byte major, uint propMask, byte[] dataBlock, byte[] extraBlock)
@@ -29,6 +41,39 @@ internal static class MsFormsFactoryBinary
         output.Write(mask);
         output.Write(dataBlock);
         output.Write(extraBlock);
+        return output.ToArray();
+    }
+
+    public static byte[] BuildGuidAndStdFont(
+        string faceName = "Tahoma",
+        ushort weight = 400,
+        uint height = 0x0001_4244,
+        ushort charSet = 0,
+        byte flags = 0)
+    {
+        var faceNameBytes = Encoding.Latin1.GetBytes(faceName);
+        if (faceNameBytes.Length > byte.MaxValue)
+        {
+            throw new CliException($"StdFont face name is too long: {faceNameBytes.Length} bytes.");
+        }
+
+        using var output = new MemoryStream();
+        output.Write(StdFontClsid);
+        output.WriteByte(1); // StdFont.Version
+        WriteUInt16(output, charSet);
+        output.WriteByte(flags);
+        WriteUInt16(output, weight);
+        WriteUInt32(output, height);
+        output.WriteByte(checked((byte)faceNameBytes.Length));
+        output.Write(faceNameBytes);
+        return output.ToArray();
+    }
+
+    public static byte[] BuildGuidAndTextProps(Dictionary<string, object?> properties, uint supportedMask)
+    {
+        using var output = new MemoryStream();
+        output.Write(TextPropsClsid);
+        output.Write(TextPropsFactory.Build(properties, supportedMask));
         return output.ToArray();
     }
 

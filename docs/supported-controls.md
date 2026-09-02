@@ -16,6 +16,8 @@ The root Reader can expose native picture, mouse-icon, and font data, and a no-o
 
 The Reader also exposes `formShapeCookie` for native-structure diagnostics. It is not an editable JSON property and is not a hard canonical semantic: its relationship to the host's compiled control types requires PowerPoint/VBE validation, which is outside the automated codec matrix. The comparator reports a changed cookie separately so the native normalization remains visible.
 
+Frame font values observed in FormControl TextProps are carried by recreation templates so a generated Frame can select and rebuild that font encoding. They are not exported in an existing-control patch because in-place Frame font mutation is not yet part of the public Writer contract.
+
 ## Picture and mouse-icon values
 
 `picture` and `mouseIcon` accept either an embedded `base64:` native picture stream or a `file://` URI. Relative file URIs are relative to the patch/template JSON file, including when a patch is passed positionally. Exported binary assets can therefore be moved with their JSON document without depending on the shell’s working directory.
@@ -33,6 +35,8 @@ The JSON Schema describes the shared shapes of property values. Existing-control
 - `keepScrollBarsVisible`, `rightToLeft`, raw container dimensions/scroll positions, `formBooleanProperties`, and `formDrawBuffer` are limited to Frame, MultiPage, and Page.
 - `min`, `max`, `position`/`value`, `smallChange`, `orientation`, and `delay` are supported by ScrollBar and SpinButton; `largeChange` and `proportionalThumb` are ScrollBar-only.
 - `tabCaptions`, `tabTooltips`, `tabNames`, `tabTags`, `tabAccelerators`, `tabFlags`, and `style` are limited to MultiPage and TabStrip. The Writer also accepts the native-facing `listIndex` and `tabStyle` aliases; exports use `value` and `style`.
+
+The Reader additionally reports native TabStrip `tabsAllocated` and `tabData` counts for diagnostics. Newly generated TabStrips set both fields to the number of inserted tabs. Existing raw values are retained unless tab structure is reconstructed; these diagnostic fields are not accepted as independent JSON edits.
 
 ## Common control properties
 

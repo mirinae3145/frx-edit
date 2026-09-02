@@ -66,6 +66,7 @@ internal static class GeneratedStorageFactory
         {
             metadata["formCaption"] = frameCaption ?? string.Empty;
         }
+        CopyContainerFontMetadata(properties, metadata);
         if (properties is not null &&
             (MsFormsFactoryBinary.GetInt32(properties, "formSpecialEffect") ??
              MsFormsFactoryBinary.GetInt32(properties, "specialEffect")) is int specialEffect)
@@ -128,16 +129,9 @@ internal static class GeneratedStorageFactory
         MsFormsFactoryBinary.WriteUInt32(formControl, propMask);
         formControl.Write(dataBlock.ToArray());
         formControl.Write(extra.ToArray());
-        formControl.Write(BuildDefaultFontStreamData());
+        formControl.Write(BuildContainerFontStreamData(properties));
 
         return formControl.ToArray();
-    }
-
-    private static byte[] BuildDefaultFontStreamData()
-    {
-        // Matches the minimal Frame FormControl font StreamData persisted by the native
-        // designer for a default Tahoma frame.
-        return Convert.FromHexString("0352E30B918FCE119DE300AA004BB85101000000900144420100065461686F6D610000000000000000");
     }
 
     public static GeneratedMultiPageControlBytes CreateMultiPage(
@@ -229,6 +223,7 @@ internal static class GeneratedStorageFactory
             ["generatedStorageX"] = xStream,
             ["generatedStorageCompObjKind"] = "MultiPage"
         };
+        CopyContainerFontMetadata(properties, metadata);
         CopyTabMetadata(tabStripMetadata, metadata);
         GeneratedControlFactory.SynchronizeSiteFlagMetadata(metadata, siteFlags);
 
@@ -310,7 +305,7 @@ internal static class GeneratedStorageFactory
         formControl.Write(extra.ToArray());
         if (includeFont)
         {
-            formControl.Write(BuildDefaultFontStreamData());
+            formControl.Write(BuildContainerFontStreamData(properties));
         }
 
         using var payload = new MemoryStream();
@@ -430,11 +425,58 @@ internal static class GeneratedStorageFactory
         return payload;
     }
 
+    private static byte[] BuildContainerFontStreamData(Dictionary<string, object?>? properties)
+    {
+        var fontProperties = BuildContainerFontProperties(properties);
+        return HasContainerFontProperties(fontProperties)
+            ? MsFormsFactoryBinary.BuildGuidAndTextProps(fontProperties, TextPropsFactory.StandardMask)
+            : MsFormsFactoryBinary.BuildGuidAndStdFont();
+    }
+
+    private static Dictionary<string, object?> BuildContainerFontProperties(Dictionary<string, object?>? properties)
+    {
+        var fontProperties = properties is null
+            ? new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+            : new Dictionary<string, object?>(properties, StringComparer.OrdinalIgnoreCase);
+        return fontProperties;
+    }
+
+    private static bool HasContainerFontProperties(Dictionary<string, object?> properties) =>
+        properties.Keys.Any(name => name.Equals("fontName", StringComparison.OrdinalIgnoreCase) ||
+                                    name.Equals("fontSize", StringComparison.OrdinalIgnoreCase) ||
+                                    name.Equals("fontSizeRaw", StringComparison.OrdinalIgnoreCase) ||
+                                    name.Equals("fontEffects", StringComparison.OrdinalIgnoreCase) ||
+                                    name.Equals("fontEffectsHex", StringComparison.OrdinalIgnoreCase) ||
+                                    name.Equals("fontWeight", StringComparison.OrdinalIgnoreCase) ||
+                                    name.Equals("fontBold", StringComparison.OrdinalIgnoreCase) ||
+                                    name.Equals("fontItalic", StringComparison.OrdinalIgnoreCase) ||
+                                    name.Equals("fontUnderline", StringComparison.OrdinalIgnoreCase) ||
+                                    name.Equals("fontStrikethrough", StringComparison.OrdinalIgnoreCase) ||
+                                    name.Equals("fontCharSet", StringComparison.OrdinalIgnoreCase) ||
+                                    name.Equals("fontPitchAndFamily", StringComparison.OrdinalIgnoreCase));
+
+    private static void CopyContainerFontMetadata(
+        Dictionary<string, object?>? properties,
+        Dictionary<string, object?> metadata)
+    {
+        var fontProperties = BuildContainerFontProperties(properties);
+        var hasTextProps = HasContainerFontProperties(fontProperties);
+        if (hasTextProps)
+        {
+            foreach (var (name, value) in TextPropsFactory.BuildMetadata(TextPropsFactory.StandardMask, fontProperties))
+            {
+                metadata[name] = value;
+            }
+        }
+        metadata["formFontKind"] = hasTextProps ? "TextProps" : "StdFont";
+        metadata["formFontStreamByteCount"] = BuildContainerFontStreamData(properties).Length;
+    }
+
     private static void CopyTabMetadata(
         IReadOnlyDictionary<string, object?> tabStripMetadata,
         Dictionary<string, object?> metadata)
     {
-        foreach (var name in new[] { "tabCaptions", "tabTooltips", "tabNames", "tabTags", "tabAccelerators", "tabFlags", "tabStyle" })
+        foreach (var name in new[] { "tabsAllocated", "tabData", "tabCaptions", "tabTooltips", "tabNames", "tabTags", "tabAccelerators", "tabFlags", "tabStyle" })
         {
             if (tabStripMetadata.TryGetValue(name, out var value))
             {

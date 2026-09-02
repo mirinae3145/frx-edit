@@ -6,7 +6,10 @@ internal static class StructuredMsFormsParser
         0x07, 0x0C, 0x0E, 0x10, 0x11, 0x12, 0x15, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x2F, 0x39
     ];
 
-    public static IReadOnlyList<SiteDescriptor> Parse(StorageEntryDump stream)
+    public static IReadOnlyList<SiteDescriptor> Parse(
+        StorageEntryDump stream,
+        ParserMode parserMode = ParserMode.Tolerant,
+        FormControlProperties? parsedFormControl = null)
     {
         var data = stream.Data;
         if (data.Length < 12 || data[0] != 0x00 || data[1] != 0x04)
@@ -15,25 +18,40 @@ internal static class StructuredMsFormsParser
         }
 
         var cbForm = BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan(2, 2));
-        var firstPossibleSiteDataOffset = 4 + cbForm;
-        if (firstPossibleSiteDataOffset < 8 || firstPossibleSiteDataOffset >= data.Length)
+        var formDataEnd = 4 + cbForm;
+        if (formDataEnd < 8 || formDataEnd > data.Length)
         {
             return [];
         }
 
-        var candidates = new List<FormSiteDataCandidate>();
-        var scanEnd = Math.Min(data.Length - 12, firstPossibleSiteDataOffset + MaxSiteScanBytes);
-        for (var offset = firstPossibleSiteDataOffset; offset <= scanEnd; offset++)
+        var formControl = parsedFormControl;
+        if (formControl is null && !FormControlParser.TryRead(stream, out formControl))
         {
-            if (TryReadFormSiteData(stream, offset, hasClassInfoCount: true, out var withClassTable))
+            if (parserMode == ParserMode.Strict)
             {
-                candidates.Add(withClassTable);
+                return [];
+            }
+        }
+
+        var expectedSiteDataOffset = formControl?.FormStreamDataEndLocalOffset ?? formDataEnd;
+        if (expectedSiteDataOffset < formDataEnd || expectedSiteDataOffset > data.Length)
+        {
+            return [];
+        }
+
+        var hasClassInfoCount = ResolveClassInfoCountPresence(formControl);
+        var candidates = ReadCandidatesAt(stream, expectedSiteDataOffset, hasClassInfoCount);
+        var recoveredByScan = false;
+        if (candidates.Count == 0 && parserMode != ParserMode.Strict)
+        {
+            var scanStart = Math.Min(data.Length, expectedSiteDataOffset + 1);
+            var scanEnd = Math.Min(data.Length - 12, expectedSiteDataOffset + MaxSiteScanBytes);
+            for (var offset = scanStart; offset <= scanEnd; offset++)
+            {
+                candidates.AddRange(ReadCandidatesAt(stream, offset, hasClassInfoCount));
             }
 
-            if (TryReadFormSiteData(stream, offset, hasClassInfoCount: false, out var withoutClassTable))
-            {
-                candidates.Add(withoutClassTable);
-            }
+            recoveredByScan = candidates.Count > 0;
         }
 
         if (candidates.Count == 0)
@@ -44,7 +62,24 @@ internal static class StructuredMsFormsParser
         var best = candidates
             .OrderByDescending(c => c.Score)
             .ThenBy(c => c.Offset)
+            .ThenBy(c => c.HasClassInfoCount ? 1 : 0)
             .First();
+
+        var gapByteCount = best.Offset - expectedSiteDataOffset;
+        if (formControl is not null)
+        {
+            formControl.Properties["formSiteDataStartLocalOffset"] = best.Offset;
+            formControl.Properties["formSiteDataGapByteCount"] = gapByteCount;
+            formControl.Properties["formSiteDataBoundaryValidation"] = recoveredByScan ? "recovered" : "exact";
+            formControl.Properties["formSiteDataStartOffset"] = MsFormsBinary.OffsetAt(stream.FileOffsets, best.Offset);
+            if (recoveredByScan)
+            {
+                formControl.Properties["formSiteDataBoundaryWarning"] =
+                    $"Recovered FormSiteData {gapByteCount} byte(s) after the exact FormStreamData boundary.";
+                formControl.Properties["formSiteDataGapHex"] = Convert.ToHexString(
+                    data.AsSpan(expectedSiteDataOffset, Math.Min(gapByteCount, 64)));
+            }
+        }
 
         foreach (var site in best.Sites)
         {
@@ -59,6 +94,18 @@ internal static class StructuredMsFormsParser
             site.ExtraProperties["siteDataCountOfBytesLocalOffset"] = best.CountOfBytesOffset;
             site.ExtraProperties["siteDataDepthsLocalOffset"] = best.DepthStartOffset;
             site.ExtraProperties["siteDataEndOffset"] = best.EndOffset;
+            site.ExtraProperties["parentFormDataEndLocalOffset"] = formDataEnd;
+            site.ExtraProperties["parentFormStreamDataEndLocalOffset"] = expectedSiteDataOffset;
+            site.ExtraProperties["parentFormSiteDataStartLocalOffset"] = best.Offset;
+            site.ExtraProperties["parentFormSiteDataGapByteCount"] = gapByteCount;
+            site.ExtraProperties["parentFormSiteDataBoundaryValidation"] = recoveredByScan ? "recovered" : "exact";
+            if (recoveredByScan)
+            {
+                site.ExtraProperties["parentFormSiteDataBoundaryWarning"] =
+                    $"Recovered FormSiteData {gapByteCount} byte(s) after the exact FormStreamData boundary.";
+                site.ExtraProperties["parentFormSiteDataGapHex"] = Convert.ToHexString(
+                    data.AsSpan(expectedSiteDataOffset, Math.Min(gapByteCount, 64)));
+            }
             if (best.ClassTable.Count > 0)
             {
                 site.ExtraProperties["classTableCount"] = best.ClassTable.Count;
@@ -72,10 +119,48 @@ internal static class StructuredMsFormsParser
                 site.ExtraProperties["siteDataEndFileOffset"] = best.EndOffset < stream.FileOffsets.Length
                     ? stream.FileOffsets[best.EndOffset]
                     : stream.FileOffsets[^1] + 1;
+                site.ExtraProperties["parentFormStreamDataEndOffset"] = MsFormsBinary.EndOffsetAt(stream.FileOffsets, expectedSiteDataOffset);
+                site.ExtraProperties["parentFormSiteDataStartOffset"] = MsFormsBinary.OffsetAt(stream.FileOffsets, best.Offset);
             }
         }
 
         return best.Sites;
+    }
+
+    private static bool? ResolveClassInfoCountPresence(FormControlProperties? formControl)
+    {
+        if (formControl is null)
+        {
+            return null;
+        }
+
+        // FORM_FLAG_DONTSAVECLASSTABLE is 0x00008000. Its file default
+        // is clear, so an omitted BooleanProperties field requires the count.
+        var booleanProperties = formControl.Properties.TryGetValue("formBooleanPropertiesRaw", out var raw) && raw is uint value
+            ? value
+            : 0u;
+        return (booleanProperties & 0x0000_8000u) == 0;
+    }
+
+    private static List<FormSiteDataCandidate> ReadCandidatesAt(
+        StorageEntryDump stream,
+        int offset,
+        bool? hasClassInfoCount)
+    {
+        var candidates = new List<FormSiteDataCandidate>(2);
+        if (hasClassInfoCount is not false &&
+            TryReadFormSiteData(stream, offset, hasClassInfoCount: true, out var withClassTable))
+        {
+            candidates.Add(withClassTable);
+        }
+
+        if (hasClassInfoCount is not true &&
+            TryReadFormSiteData(stream, offset, hasClassInfoCount: false, out var withoutClassTable))
+        {
+            candidates.Add(withoutClassTable);
+        }
+
+        return candidates;
     }
 
     public static void EnrichFromObjectStream(

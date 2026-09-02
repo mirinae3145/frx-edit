@@ -27,7 +27,10 @@ jobs:
         dotnet-version: 8.0.x
 
     - name: Restore dependencies
-      run: dotnet restore src/FrxEdit.Cli/FrxEdit.Cli.csproj
+      run: dotnet restore FrxEdit.sln
+
+    - name: Test binary boundary regressions
+      run: dotnet run --project tests/FrxEdit.Tests/FrxEdit.Tests.csproj -c Release
 
     - name: Test canonical round-trip fidelity
       shell: pwsh

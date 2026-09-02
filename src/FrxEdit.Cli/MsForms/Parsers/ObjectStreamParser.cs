@@ -410,23 +410,91 @@ internal static class ObjectStreamParser
         return true;
     }
 
-    internal static bool TrySkipGuidAndFont(byte[] data, ref int cursor)
+    internal static bool TryReadGuidAndFont(
+        byte[] data,
+        int[] fileOffsets,
+        ref int cursor,
+        string propertyPrefix,
+        Dictionary<string, object?> properties)
     {
-        if (cursor + 16 > data.Length) return false;
+        const string stdFontGuid = "{0BE35203-8F91-11CE-9DE3-00AA004BB851}";
+        const string textPropsGuid = "{AFC20920-DA4E-11CE-B943-00AA006887B4}";
 
-        var guid = ReadGuidString(data, cursor);
-        cursor += 16;
-
-        if (guid == "{0BE35203-8F91-11CE-9DE3-00AA004BB851}") // StdFont
+        var start = cursor;
+        if (start < 0 || start + 16 > data.Length)
         {
-            if (cursor + 11 > data.Length) return false;
-            var faceLen = data[cursor + 10];
-            cursor += 11 + faceLen;
-            return true;
+            return false;
         }
-        
-        // If it's TextProps, we don't have an easy skip method here, but UserForm usually uses StdFont.
-        return false;
+
+        var guid = ReadGuidString(data, start);
+        var fontCursor = start + 16;
+        var parsed = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+        {
+            [$"{propertyPrefix}StreamLocalOffset"] = start,
+            [$"{propertyPrefix}StreamOffset"] = MsFormsBinary.OffsetAt(fileOffsets, start),
+            [$"{propertyPrefix}ClsidLocalOffset"] = start,
+            [$"{propertyPrefix}ClsidOffset"] = MsFormsBinary.OffsetAt(fileOffsets, start),
+            [$"{propertyPrefix}Clsid"] = guid
+        };
+
+        try
+        {
+            if (guid == stdFontGuid)
+            {
+                const int stdFontHeaderLength = 11;
+                if (fontCursor + stdFontHeaderLength > data.Length)
+                {
+                    return false;
+                }
+
+                var faceNameLength = data[fontCursor + 10];
+                var end = fontCursor + stdFontHeaderLength + faceNameLength;
+                if (end > data.Length)
+                {
+                    return false;
+                }
+
+                parsed[$"{propertyPrefix}Kind"] = "StdFont";
+                parsed[$"{propertyPrefix}Version"] = data[fontCursor];
+                parsed[$"{propertyPrefix}CharSet"] = BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan(fontCursor + 1, 2));
+                parsed[$"{propertyPrefix}Flags"] = data[fontCursor + 3];
+                parsed[$"{propertyPrefix}Weight"] = BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan(fontCursor + 4, 2));
+                parsed[$"{propertyPrefix}HeightRaw"] = BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(fontCursor + 6, 4));
+                parsed[$"{propertyPrefix}NameByteCount"] = faceNameLength;
+                parsed[$"{propertyPrefix}Name"] = Encoding.Latin1.GetString(data, fontCursor + stdFontHeaderLength, faceNameLength);
+                fontCursor = end;
+            }
+            else if (guid == textPropsGuid)
+            {
+                if (!TextPropsParser.TryRead(data, fileOffsets, fontCursor, parsed, out var textPropsEnd))
+                {
+                    return false;
+                }
+
+                parsed[$"{propertyPrefix}Kind"] = "TextProps";
+                fontCursor = textPropsEnd;
+            }
+            else
+            {
+                return false;
+            }
+        }
+        catch (Exception ex) when (ex is ArgumentOutOfRangeException or InvalidDataException)
+        {
+            return false;
+        }
+
+        parsed[$"{propertyPrefix}StreamEndLocalOffset"] = fontCursor;
+        parsed[$"{propertyPrefix}StreamEndOffset"] = MsFormsBinary.EndOffsetAt(fileOffsets, fontCursor);
+        parsed[$"{propertyPrefix}StreamByteCount"] = fontCursor - start;
+        parsed[propertyPrefix] = $"base64:{Convert.ToBase64String(data.AsSpan(start, fontCursor - start))}";
+        foreach (var (name, value) in parsed)
+        {
+            properties[name] = value;
+        }
+
+        cursor = fontCursor;
+        return true;
     }
 
     internal static string ReadGuidString(byte[] data, int offset)

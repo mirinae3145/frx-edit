@@ -11,14 +11,26 @@ internal static class FormStreamParser
         StorageEntryDump? objectStream = null,
         ParserMode parserMode = ParserMode.Tolerant,
         SemanticAuditCollector? semanticAudit = null,
-        string? streamOwner = null)
+        string? streamOwner = null,
+        FormControlProperties? parsedFormControl = null)
     {
         if (parserMode == ParserMode.Legacy)
         {
             return new FormStreamParseResult(LegacyNameScanParser.Scan(stream, knownControlNames), []);
         }
 
-        var sites = StructuredMsFormsParser.Parse(stream);
+        var formControl = parsedFormControl;
+        if (formControl is null && FormControlParser.TryRead(stream, out var reparsedFormControl))
+        {
+            formControl = reparsedFormControl;
+        }
+
+        if (parserMode == ParserMode.Strict && formControl is { FormStreamDataValid: false })
+        {
+            throw new CliException($"Strict parser mode rejected invalid FormStreamData in stream '{stream.Path ?? stream.Name}'.");
+        }
+
+        var sites = StructuredMsFormsParser.Parse(stream, parserMode, formControl);
         if (sites.Count > 0)
         {
             if (objectStream != null)
@@ -41,7 +53,7 @@ internal static class FormStreamParser
             return new FormStreamParseResult(controls, internalSites);
         }
 
-        if (IsDocumentedEmptyParentStorage(stream, objectStream))
+        if (IsDocumentedEmptyParentStorage(stream, objectStream, formControl))
         {
             return new FormStreamParseResult([], []);
         }
@@ -54,9 +66,17 @@ internal static class FormStreamParser
         return new FormStreamParseResult(LegacyNameScanParser.Scan(stream, knownControlNames), []);
     }
 
-    private static bool IsDocumentedEmptyParentStorage(StorageEntryDump stream, StorageEntryDump? objectStream)
+    private static bool IsDocumentedEmptyParentStorage(
+        StorageEntryDump stream,
+        StorageEntryDump? objectStream,
+        FormControlProperties? parsedFormControl)
     {
-        if (!FormControlParser.TryRead(stream, out _))
+        if (parsedFormControl is null && !FormControlParser.TryRead(stream, out parsedFormControl))
+        {
+            return false;
+        }
+
+        if (!parsedFormControl.FormStreamDataValid)
         {
             return false;
         }

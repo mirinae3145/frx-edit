@@ -47,7 +47,7 @@ internal sealed class FrxBinary
         "tabFixedWidth", "tabFixedHeight", "tooltips", "enabled", "locked", "backStyle", "integralHeight",
         "dragBehavior", "enterKeyBehavior", "enterFieldBehavior", "tabKeyBehavior", "wordWrap",
         "selectionMargin", "autoWordSelect", "autoSize", "hideSelection", "autoTab", "multiLine", "imeMode",
-        "mouseIcon", "tabCaptions", "tabTooltips", "tabNames", "tabTags", "tabAccelerators", "tabFlags",
+        "mouseIcon", "tabsAllocated", "tabData", "tabCaptions", "tabTooltips", "tabNames", "tabTags", "tabAccelerators", "tabFlags",
         "fontName", "fontSize", "fontWeight", "fontCharSet", "fontPitchAndFamily", "fontItalic",
         "fontUnderline", "fontStrikethrough"
     };
@@ -388,31 +388,10 @@ internal sealed class FrxBinary
                 streamOwner = pendingContainerOwners.Dequeue();
             }
 
+            FormControlProperties? parsedFormControl = null;
             if (FormControlParser.TryRead(stream, out var formControlProperties))
             {
-                if (streamOwner is not null)
-                {
-                    semanticAudit?.ObserveFormControl(
-                        "control",
-                        streamOwner,
-                        null,
-                        null,
-                        stream.ParentPath,
-                        formControlProperties);
-                    formControlByOwner[streamOwner] = formControlProperties;
-                }
-                else if (IsRootStoragePath(stream.ParentPath ?? string.Empty))
-                {
-                    semanticAudit?.ObserveFormControl(
-                        "form",
-                        semanticAudit.FormName,
-                        "UserForm",
-                        null,
-                        stream.ParentPath,
-                        formControlProperties);
-                    rootFormControl = BuildRootFormControlProperties(stream, formControlProperties);
-                    AnnotateRootStorage(rootFormControl, storage.Streams);
-                }
+                parsedFormControl = formControlProperties;
             }
 
             var pairedOStream = FindPairedObjectStream(storage.Streams, stream);
@@ -422,7 +401,34 @@ internal sealed class FrxBinary
                 pairedOStream,
                 parserMode,
                 semanticAudit,
-                streamOwner);
+                streamOwner,
+                parsedFormControl);
+            if (parsedFormControl is not null)
+            {
+                if (streamOwner is not null)
+                {
+                    semanticAudit?.ObserveFormControl(
+                        "control",
+                        streamOwner,
+                        null,
+                        null,
+                        stream.ParentPath,
+                        parsedFormControl);
+                    formControlByOwner[streamOwner] = parsedFormControl;
+                }
+                else if (IsRootStoragePath(stream.ParentPath ?? string.Empty))
+                {
+                    semanticAudit?.ObserveFormControl(
+                        "form",
+                        semanticAudit.FormName,
+                        "UserForm",
+                        null,
+                        stream.ParentPath,
+                        parsedFormControl);
+                    rootFormControl = BuildRootFormControlProperties(stream, parsedFormControl);
+                    AnnotateRootStorage(rootFormControl, storage.Streams);
+                }
+            }
             var streamControls = BuildControlInfos(streamResult.Controls, streamOwner, controlScopes);
             if (streamOwner is not null)
             {

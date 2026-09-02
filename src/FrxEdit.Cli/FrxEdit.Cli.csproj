@@ -15,4 +15,8 @@
     </Content>
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="FrxEdit.Tests" />
+  </ItemGroup>
+
 </Project>

@@ -113,6 +113,8 @@ function Assert-Graph([object]$Patch, [object]$Raw, [object]$Storage) {
     Assert-Condition (($pages.properties.multiPagePageId -join ",") -eq ($multiPage.properties.multiPagePageIds -join ",")) "x Page IDs must match the effective Page IDs"
     Assert-Condition (($multiPage.properties.tabNames -join ",") -eq "PageA,PageB,PageC") "generated TabStrip names must match effective Pages"
     Assert-Condition (($multiPage.properties.tabCaptions -join ",") -eq "PageA,PageB,PageC") "generated TabStrip captions must match effective Pages"
+    Assert-Condition ($multiPage.properties.tabsAllocated -eq 3) "generated MultiPage TabsAllocated must equal its three inserted tabs"
+    Assert-Condition ($multiPage.properties.tabData -eq 3) "generated MultiPage TabData must equal its three inserted tabs"
     Assert-Condition ($multiPage.properties.value -eq 2) "Tabs must preserve numeric MultiPage value 2"
     Assert-Condition ($multiPage.properties.listIndex -eq 2) "Tabs must project internal TabStrip listIndex 2"
     Assert-Condition (($multiPage.properties.style -eq 1) -and ($multiPage.properties.tabStyle -eq 1)) "Tabs must retain internal TabStrip style 1"
@@ -126,6 +128,8 @@ function Assert-Graph([object]$Patch, [object]$Raw, [object]$Storage) {
     Assert-Condition ($contractTabs.properties.listIndex -eq 1) "ContractTabs must retain canonical value as listIndex 1"
     Assert-Condition ($contractTabs.properties.tabStyle -eq 1) "ContractTabs must retain canonical style as tabStyle 1"
     Assert-Condition (($contractTabs.properties.tabCaptions -join ",") -eq "First,Second") "ContractTabs must retain tab captions"
+    Assert-Condition ($contractTabs.properties.tabsAllocated -eq 2) "ContractTabs TabsAllocated must equal its two inserted tabs"
+    Assert-Condition ($contractTabs.properties.tabData -eq 2) "ContractTabs TabData must equal its two inserted tabs"
 
     $xValidation = $Raw.parserValidation.multiPageXStreamValidations.Tabs
     Assert-Condition ($xValidation.validation -eq "exact") "parser validation must report an exact Tabs x stream"
@@ -184,6 +188,18 @@ function Assert-Graph([object]$Patch, [object]$Raw, [object]$Storage) {
 
         $objectValidation = $Raw.parserValidation.objectStreamValidations.PSObject.Properties[$ownedPath].Value
         Assert-Condition ($objectValidation.validation -eq "exact") "'$containerName' o stream must consume exactly"
+
+        if ($children.Count -gt 0) {
+            Assert-Condition ($container.properties.formStreamDataValidation -eq "exact") "'$containerName' FormStreamData must parse exactly"
+            Assert-Condition ($container.properties.formSiteDataBoundaryValidation -eq "exact") "'$containerName' FormSiteData must begin at the exact FormStreamData boundary"
+            Assert-Condition ($container.properties.formSiteDataGapByteCount -eq 0) "'$containerName' must not contain a FormStreamData/FormSiteData gap"
+            Assert-Condition ($container.properties.formStreamDataEndLocalOffset -eq $container.properties.formSiteDataStartLocalOffset) "'$containerName' FormStreamData end must equal FormSiteData start"
+        }
+
+        if ($container.type -in @("Frame", "MultiPage")) {
+            Assert-Condition ($container.properties.formFontKind -eq "StdFont") "'$containerName' default font must use StdFont"
+            Assert-Condition ($container.properties.formFontStreamByteCount -eq 33) "'$containerName' default GuidAndStdFont must be exactly 33 bytes"
+        }
     }
 }
 
@@ -251,6 +267,8 @@ try {
         $raw = Get-Content -Raw -LiteralPath $rawPath | ConvertFrom-Json
         $storage = Get-Content -Raw -LiteralPath $storagePath | ConvertFrom-Json
         Assert-Graph $case.Patch $raw $storage
+        Assert-Condition ($raw.frxFormControl.formSiteDataBoundaryValidation -eq "exact") "generated root FormSiteData must begin at its exact FormStreamData boundary"
+        Assert-Condition ($raw.frxFormControl.formSiteDataGapByteCount -eq 0) "generated root must not contain a FormStreamData/FormSiteData gap"
         $rawOutputs[$case.Name] = $raw
     }
 

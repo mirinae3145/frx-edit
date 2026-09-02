@@ -173,20 +173,42 @@ internal static class FormControlParser
         }
 
         cursor = blockEnd;
+        var streamDataValid = true;
+        result["formStreamDataLocalOffset"] = cursor;
+        result["formStreamDataOffset"] = MsFormsBinary.OffsetAt(fileOffsets, cursor);
+
+        // MS-OFORMS FormStreamData order is MouseIcon, GuidAndFont, then Picture.
+        if (Has(propMask, 15)) // fMouseIcon
+        {
+            if (!ObjectStreamParser.TryReadGuidAndPicture(data, fileOffsets, ref cursor, "formMouseIcon", result))
+            {
+                streamDataValid = false;
+                result["formMouseIconStreamWarning"] = $"Could not parse FormStreamData.MouseIcon at local offset {cursor}.";
+            }
+        }
+
         if (Has(propMask, 20)) // fFont
         {
-            ObjectStreamParser.TrySkipGuidAndFont(data, ref cursor);
+            if (!ObjectStreamParser.TryReadGuidAndFont(data, fileOffsets, ref cursor, "formFont", result))
+            {
+                streamDataValid = false;
+                result["formFontStreamWarning"] = $"Could not parse FormStreamData.GuidAndFont at local offset {cursor}.";
+            }
         }
 
         if (Has(propMask, 21)) // fPicture
         {
-            ObjectStreamParser.TryReadGuidAndPicture(data, fileOffsets, ref cursor, "formPicture", result);
+            if (!ObjectStreamParser.TryReadGuidAndPicture(data, fileOffsets, ref cursor, "formPicture", result))
+            {
+                streamDataValid = false;
+                result["formPictureStreamWarning"] = $"Could not parse FormStreamData.Picture at local offset {cursor}.";
+            }
         }
 
-        if (Has(propMask, 15)) // fMouseIcon
-        {
-            ObjectStreamParser.TryReadGuidAndPicture(data, fileOffsets, ref cursor, "formMouseIcon", result);
-        }
+        result["formStreamDataEndLocalOffset"] = cursor;
+        result["formStreamDataEndOffset"] = MsFormsBinary.EndOffsetAt(fileOffsets, cursor);
+        result["formStreamDataByteCount"] = cursor - blockEnd;
+        result["formStreamDataValidation"] = streamDataValid ? "exact" : "invalid";
 
         properties = new FormControlProperties(
             result,
@@ -201,7 +223,10 @@ internal static class FormControlParser
             scrollLeft,
             scrollTop,
             scrollLeftOffset,
-            scrollTopOffset);
+            scrollTopOffset,
+            blockEnd,
+            cursor,
+            streamDataValid);
         return true;
     }
 

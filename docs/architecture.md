@@ -17,7 +17,7 @@ Binary root `formGroupCount` is a Writer-backed semantic value; its documented f
 
 Controls are represented by sites in the root storage or in a storage owned by a container:
 
-- **`f` (form data)** contains a FormControl or container record followed by the ordered FormSiteData records for its immediate children.
+- **`f` (form data)** contains a FormControl or container record followed immediately by the ordered FormSiteData records for its immediate children. `FormStreamData` has no trailing alignment field: its `MouseIcon`, `GuidAndFont`, and `Picture` values determine the exact SiteData boundary.
 - **`o` (object data)** contains the concatenated payloads of object-bearing immediate children. Its payload order must agree with the corresponding Sites order.
 - **`x` (extended data)** records relationships such as MultiPage Page IDs.
 
@@ -29,11 +29,11 @@ Each site's optional `BitFlags` word has the effective file default `0x00000033`
 
 FrxEdit uses the following stages:
 
-1. **Parse and validate.** The Reader discovers the CFB graph and parses known `f`, `o`, and `x` records in strict or tolerant mode. Strict mode requires exact stream consumption and rejects parser warnings.
+1. **Parse and validate.** The Reader discovers the CFB graph and parses known `f`, `o`, and `x` records in strict or tolerant mode. It computes the exact end of both legal `GuidAndFont` variants (`StdFont` and `TextProps`). Strict mode requires FormSiteData at that exact boundary, exact stream consumption, and no parser warnings. Tolerant mode can perform a bounded SiteData recovery scan, but reports the recovered offset, skipped-byte count and bytes, and a warning.
 1. **Normalize patch intent.** Patch and template JSON are validated and normalized. The reconstruction plan records object-property, site-property, geometry, structure, binary-root, and textual FRM-root changes separately.
 1. **Preserve or patch existing state.** Unchanged site records and object-stream slices are copied from the source. Modified objects are rebuilt from their parsed native state plus the requested delta, preserving omitted values, unsigned bitfields, and unknown bits rather than replacing them with generated defaults.
 1. **Plan the control graph.** Adds, removes, moves, renames, and container ownership are resolved before bytes are emitted. Parent dependencies do not depend on the incoming JSON `add` order, while source sibling order within a parent is retained.
-1. **Generate new controls and containers.** New controls use type-specific schemas. Frames, Pages, and MultiPages receive owned storage, and their child `f`/`o` streams participate in the same graph plan as existing containers. Explicit Pages suppress the two-Page fallback.
+1. **Generate new controls and containers.** New controls use type-specific schemas. Frames, Pages, and MultiPages receive owned storage, and their child `f`/`o` streams participate in the same graph plan as existing containers. Generated Frame and MultiPage fonts use `GuidAndTextProps` when the template carries TextProps semantics and the exact 33-byte `GuidAndStdFont` representation otherwise; neither encoding adds padding before SiteData. Explicit Pages suppress the two-Page fallback.
 1. **Serialize coordinated streams.** FormSiteData, object payload order, container streams, MultiPage TabStrip data, and Page-ID `x` streams are emitted from the same completed plan. Picture lengths include their property masks and native picture envelopes.
 1. **Build a new CFB container.** FrxEdit writes a fresh compound container from the planned streams. FRX byte equality is intentionally not required; parsed semantics and native structural invariants are the acceptance criteria.
 1. **Update `.frm` text.** Control declarations and explicitly requested textual properties are synchronized. Unchanged root text and VBA code remain source-derived.
@@ -68,7 +68,8 @@ Documented default-vs-omitted values are listed separately as normalizations. Na
 ## Regression suites
 
 - `scripts/test-canonical-roundtrip.ps1` performs no-op rebuild, both exported-patch command forms, bounded watch regeneration, and template recreation on copies of the comprehensive local fixture. Watch runs from a directory unrelated to the exported patch, then requires strict reread and canonical comparison of the regenerated output. Passing `-IguanaTexRepo` adds the nine canonical IguanaTex forms, applies the exact LatexForm graph/MultiPage gates to every reconstruction path, and verifies source hashes before and after the run. `-SkipWatch` is available only for focused diagnosis; watch is part of the default acceptance suite.
-- `scripts/test-generated-container-pipeline.ps1` validates parent-first and child-first graph planning, nested Page/Frame reachability, exact MultiPage streams, Page cloning and replacement, and fallback Pages.
+- `tests/FrxEdit.Tests` directly checks both `GuidAndFont` variants, exact generated font bytes, strict boundary rejection, and explicitly reported tolerant recovery.
+- `scripts/test-generated-container-pipeline.ps1` validates parent-first and child-first graph planning, nested Page/Frame reachability, exact generated FormStreamData/SiteData boundaries, exact MultiPage streams, Page cloning and replacement, and fallback Pages.
 
 By default both suites retain each run in a fresh GUID-scoped directory under `.build`; `-ArtifactsRoot` selects another retained-artifact root. The legacy `-KeepArtifacts` switch remains accepted for invocation compatibility but is no longer required. The canonical suite retains command logs, generated pairs, raw inspections, comparison reports, watch state, and source-hash manifests on success or failure.
 
@@ -80,6 +81,7 @@ The reconstruction and comparison policies above are based on Microsoft's defini
 - [object-stream control ordering](https://learn.microsoft.com/en-us/openspecs/office_file_formats/ms-oforms/15778df8-8a8e-45dc-933b-f914f4e011cf);
 - [OleSiteConcreteControl optional/default persistence](https://learn.microsoft.com/en-us/openspecs/office_file_formats/ms-oforms/21354226-e08d-44d2-a06f-c9e751b56188), [SitePropMask](https://learn.microsoft.com/en-us/openspecs/office_file_formats/ms-oforms/896d3774-dd6e-46b5-bfa7-6651aba111a8), and [SITE_FLAG](https://learn.microsoft.com/en-us/openspecs/office_file_formats/ms-oforms/ed58f23c-ec1f-43f8-a593-df2626191d27);
 - [FormDataBlock](https://learn.microsoft.com/en-us/openspecs/office_file_formats/ms-oforms/096870e8-5263-44ed-885b-379d23471c4f) and the zero-default [GroupCount](https://learn.microsoft.com/en-us/openspecs/office_file_formats/ms-oforms/f6e7d082-f4b8-4727-8f02-4a43dad6771e);
+- [FormControl field ordering](https://learn.microsoft.com/en-us/openspecs/office_file_formats/ms-oforms/219bef34-8932-4287-853d-f8e1dd73edb1), [FormStreamData ordering](https://learn.microsoft.com/en-us/openspecs/office_file_formats/ms-oforms/0f5520cd-6a6c-4bf4-9bd0-5c322b6a288f), and the two legal [FormFont](https://learn.microsoft.com/en-us/openspecs/office_file_formats/ms-oforms/53f28a1b-e029-4592-a8e2-f95e80994a76) encodings;
 - [Image `cbImage`](https://learn.microsoft.com/en-us/openspecs/office_file_formats/ms-oforms/aa5531bb-1ab3-430e-8091-f03df8d22891); and
 - [VariousPropertyBits defaults](https://learn.microsoft.com/en-us/openspecs/office_file_formats/ms-oforms/7a72ac4a-39d9-4e2b-829e-19e3e9a1f60d).
 

@@ -254,7 +254,8 @@ internal static class PatchDocumentGenerator
             {
                 var isLayoutProperty = kvp.Key is "leftPt" or "topPt" or "widthPt" or "heightPt";
                 if (IsRebuiltMorphProperty(kvp.Key, controlProps, control.Type) &&
-                    (isLayoutProperty || RebuildPatchApplier.SupportsExportedObjectProperty(control.Type, kvp.Key)))
+                    (isLayoutProperty || RebuildPatchApplier.SupportsExportedObjectProperty(control.Type, kvp.Key) ||
+                     asTemplate && RebuildPatchApplier.SupportsGeneratedObjectProperty(control.Type, kvp.Key)))
                 {
                     cleanedProps[kvp.Key] = kvp.Value;
                 }
@@ -273,7 +274,8 @@ internal static class PatchDocumentGenerator
                          name is not "$action" and not "$newName" and not "type" and not "parent" and
                          not "leftPt" and not "topPt" and not "widthPt" and not "heightPt"))
             {
-                if (!RebuildPatchApplier.SupportsExportedObjectProperty(control.Type, propertyName))
+                if (!RebuildPatchApplier.SupportsExportedObjectProperty(control.Type, propertyName) &&
+                    !(asTemplate && RebuildPatchApplier.SupportsGeneratedObjectProperty(control.Type, propertyName)))
                 {
                     throw new InvalidOperationException(
                         $"Exporter contract violation: {control.Type} property '{propertyName}' has no Writer consumer.");

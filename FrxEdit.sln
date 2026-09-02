@@ -7,6 +7,10 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{99BB8578-D45
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FrxEdit.Cli", "src\FrxEdit.Cli\FrxEdit.Cli.csproj", "{2C61F303-907D-43BE-ADB9-11CD245FC3E6}"
 EndProject
+Project("{2150E333-8FDC-42A3-9474-6B8D9C7EF42A}") = "tests", "tests", "{D12E3F45-A678-49BC-8D01-E234F567890A}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FrxEdit.Tests", "tests\FrxEdit.Tests\FrxEdit.Tests.csproj", "{A3B4C5D6-E7F8-4901-A2B3-C4D5E6F70819}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -20,8 +24,13 @@ Global
 		{2C61F303-907D-43BE-ADB9-11CD245FC3E6}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{2C61F303-907D-43BE-ADB9-11CD245FC3E6}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{2C61F303-907D-43BE-ADB9-11CD245FC3E6}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A3B4C5D6-E7F8-4901-A2B3-C4D5E6F70819}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A3B4C5D6-E7F8-4901-A2B3-C4D5E6F70819}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A3B4C5D6-E7F8-4901-A2B3-C4D5E6F70819}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A3B4C5D6-E7F8-4901-A2B3-C4D5E6F70819}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{2C61F303-907D-43BE-ADB9-11CD245FC3E6} = {99BB8578-D458-4C64-9467-DA2404562179}
+		{A3B4C5D6-E7F8-4901-A2B3-C4D5E6F70819} = {D12E3F45-A678-49BC-8D01-E234F567890A}
 	EndGlobalSection
 EndGlobal

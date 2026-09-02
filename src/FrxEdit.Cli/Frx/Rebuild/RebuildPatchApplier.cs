@@ -1253,7 +1253,7 @@ internal static class RebuildPatchApplier
                     }
                     else
                     {
-                        ApplyPropertyToDictionary(name, type, props, kvp.Key, kvp.Value, patchDir);
+                        ApplyPropertyToDictionary(name, type, props, kvp.Key, kvp.Value, patchDir, allowGeneratedProperties: true);
                     }
                 }
             }
@@ -2043,9 +2043,17 @@ internal static class RebuildPatchApplier
         };
     }
 
-    private static void ApplyPropertyToDictionary(string controlName, string controlType, Dictionary<string, object?> props, string propertyName, JsonElement value, string? patchDir)
+    private static void ApplyPropertyToDictionary(
+        string controlName,
+        string controlType,
+        Dictionary<string, object?> props,
+        string propertyName,
+        JsonElement value,
+        string? patchDir,
+        bool allowGeneratedProperties = false)
     {
-        if (!SupportsExportedObjectProperty(controlType, propertyName))
+        if (!SupportsExportedObjectProperty(controlType, propertyName) &&
+            !(allowGeneratedProperties && SupportsGeneratedObjectProperty(controlType, propertyName)))
         {
             throw new CliException($"Property '{propertyName}' is not supported for {controlType} control '{controlName}'.");
         }
@@ -2415,7 +2423,7 @@ internal static class RebuildPatchApplier
 
     private static void ApplyAddPropertyToDictionary(string controlName, string controlType, Dictionary<string, object?> props, string propertyName, JsonElement value, string? patchDir)
     {
-        if (!SupportsExportedObjectProperty(controlType, propertyName))
+        if (!SupportsGeneratedObjectProperty(controlType, propertyName))
         {
             throw new CliException($"Property '{propertyName}' is not supported for {controlType} control '{controlName}'.");
         }
@@ -2570,7 +2578,7 @@ internal static class RebuildPatchApplier
                 props["formDrawBuffer"] = RequireUInt32Like(controlName, propertyName, value);
                 break;
             default:
-                ApplyPropertyToDictionary(controlName, controlType, props, propertyName, value, patchDir);
+                ApplyPropertyToDictionary(controlName, controlType, props, propertyName, value, patchDir, allowGeneratedProperties: true);
                 break;
         }
     }
@@ -3315,6 +3323,10 @@ internal static class RebuildPatchApplier
             _ => false
         };
     }
+
+    internal static bool SupportsGeneratedObjectProperty(string controlType, string propertyName) =>
+        SupportsExportedObjectProperty(controlType, propertyName) ||
+        controlType.Equals("Frame", StringComparison.OrdinalIgnoreCase) && FontPropertyNames.Contains(propertyName, StringComparer.OrdinalIgnoreCase);
 
     internal static bool SupportsExportedRootProperty(string propertyName) =>
         RootFormPropertyNames.Contains(propertyName);

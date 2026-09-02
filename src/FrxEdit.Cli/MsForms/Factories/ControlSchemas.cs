@@ -1437,7 +1437,7 @@ internal sealed class TabStripControlSchema : IGeneratedControlSchema
         }
         MsFormsFactoryBinary.WriteUInt32(dataBlock, checked((uint)tooltipBlock.Length));
         MsFormsFactoryBinary.WriteUInt32(dataBlock, checked((uint)nameBlock.Length));
-        MsFormsFactoryBinary.WriteInt32(dataBlock, captions.Count + 1);
+        MsFormsFactoryBinary.WriteInt32(dataBlock, captions.Count);
         MsFormsFactoryBinary.WriteUInt32(dataBlock, checked((uint)tagBlock.Length));
         MsFormsFactoryBinary.WriteInt32(dataBlock, captions.Count);
         MsFormsFactoryBinary.WriteUInt32(dataBlock, checked((uint)acceleratorBlock.Length));
@@ -1493,7 +1493,7 @@ internal sealed class TabStripControlSchema : IGeneratedControlSchema
         metadata["propMask"] = $"0x{propMask:X8}";
         metadata["listIndex"] = listIndex;
         if (tabStyle is not null) metadata["tabStyle"] = tabStyle.Value;
-        metadata["tabsAllocated"] = captions.Count + 1;
+        metadata["tabsAllocated"] = captions.Count;
         metadata["tabData"] = captions.Count;
         metadata["tabCaptions"] = captions;
         metadata["tabTooltips"] = tooltips;

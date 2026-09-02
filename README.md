@@ -91,12 +91,15 @@ Reader audits trace parser observations through the raw model and exported JSON.
 
 ## Fidelity testing
 
-The repository provides two copy-based regression suites:
+The repository provides a focused binary regression plus two copy-based suites:
 
 ```powershell
+dotnet run --project tests/FrxEdit.Tests/FrxEdit.Tests.csproj -c Release
 ./scripts/test-canonical-roundtrip.ps1 -Configuration Release
 ./scripts/test-generated-container-pipeline.ps1 -Configuration Release
 ```
+
+The focused executable regression checks exact `GuidAndFont` serialization and rejects a deliberately malformed gap between `FormStreamData` and `FormSiteData`. The generated-container suite also requires every generated Frame and MultiPage font stream and SiteData boundary to consume exactly.
 
 The canonical test always exercises `test_data/forms/original/userformallcontrol`. To run the external nine-form IguanaTex corpus as well:
 

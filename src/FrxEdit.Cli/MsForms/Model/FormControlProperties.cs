@@ -11,4 +11,7 @@ internal sealed record FormControlProperties(
     int? ScrollLeft,
     int? ScrollTop,
     int? ScrollLeftOffset,
-    int? ScrollTopOffset);
+    int? ScrollTopOffset,
+    int FormDataEndLocalOffset,
+    int FormStreamDataEndLocalOffset,
+    bool FormStreamDataValid);
