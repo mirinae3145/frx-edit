@@ -66,6 +66,7 @@ internal static class GeneratedStorageFactory
         {
             metadata["formCaption"] = frameCaption ?? string.Empty;
         }
+        CopyFormDesignExMetadata(formBooleanProperties, properties, metadata, name);
         CopyContainerFontMetadata(properties, metadata);
         if (properties is not null &&
             (MsFormsFactoryBinary.GetInt32(properties, "formSpecialEffect") ??
@@ -131,7 +132,8 @@ internal static class GeneratedStorageFactory
         formControl.Write(extra.ToArray());
         formControl.Write(BuildContainerFontStreamData(properties));
 
-        return formControl.ToArray();
+        var designExData = ResolveFormDesignExData(formBooleanProperties, properties, "Frame");
+        return [.. formControl.ToArray(), .. designExData];
     }
 
     public static GeneratedMultiPageControlBytes CreateMultiPage(
@@ -223,6 +225,11 @@ internal static class GeneratedStorageFactory
             ["generatedStorageX"] = xStream,
             ["generatedStorageCompObjKind"] = "MultiPage"
         };
+        CopyFormDesignExMetadata(
+            GetFormBooleanProperties(properties, 0x0000_C004u),
+            properties,
+            metadata,
+            "MultiPage");
         CopyContainerFontMetadata(properties, metadata);
         CopyTabMetadata(tabStripMetadata, metadata);
         GeneratedControlFactory.SynchronizeSiteFlagMetadata(metadata, siteFlags);
@@ -325,9 +332,11 @@ internal static class GeneratedStorageFactory
         MsFormsFactoryBinary.WriteUInt32(siteData, checked((uint)sites.Count));
         MsFormsFactoryBinary.WriteUInt32(siteData, checked((uint)payload.Length));
         siteData.Write(payload.ToArray());
-        return includePageTail
-            ? [.. formControl.ToArray(), .. siteData.ToArray(), .. BuildDefaultMultiPageTail()]
-            : [.. formControl.ToArray(), .. siteData.ToArray()];
+        var designExData = ResolveFormDesignExData(
+            formBooleanProperties,
+            properties,
+            includePageTail ? "MultiPage" : "Page");
+        return [.. formControl.ToArray(), .. siteData.ToArray(), .. designExData];
     }
 
     private static byte[] BuildInternalObjectSite(int siteId, byte typeCode, int objectStreamSize)
@@ -387,10 +396,40 @@ internal static class GeneratedStorageFactory
     }
 
     public static byte[] BuildDefaultPageTail() =>
-        Convert.FromHexString("00020C0019000000F3FF0100FF010000");
+        FormDesignExDataBinary.ResolveForGeneration(
+            0x0000_C004u,
+            requestedValue: null,
+            FormDesignExDefaultKind.Container,
+            "Page");
 
-    private static byte[] BuildDefaultMultiPageTail() =>
-        Convert.FromHexString("00020C0019000000F08F0000FF010000");
+    private static byte[] ResolveFormDesignExData(
+        uint formBooleanProperties,
+        Dictionary<string, object?>? properties,
+        string owner)
+    {
+        object? requested = null;
+        properties?.TryGetValue("formDesignExData", out requested);
+        return FormDesignExDataBinary.ResolveForGeneration(
+            formBooleanProperties,
+            requested,
+            owner.Equals("MultiPage", StringComparison.OrdinalIgnoreCase)
+                ? FormDesignExDefaultKind.MultiPage
+                : FormDesignExDefaultKind.Container,
+            owner);
+    }
+
+    private static void CopyFormDesignExMetadata(
+        uint formBooleanProperties,
+        Dictionary<string, object?>? properties,
+        Dictionary<string, object?> metadata,
+        string owner)
+    {
+        var bytes = ResolveFormDesignExData(formBooleanProperties, properties, owner);
+        if (bytes.Length > 0)
+        {
+            metadata["formDesignExData"] = FormDesignExDataBinary.ToBase64(bytes);
+        }
+    }
 
     private static byte[] BuildInternalTabStripPayload(
         IReadOnlyList<string> pageNames,

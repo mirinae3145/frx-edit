@@ -40,6 +40,28 @@ internal static class StructuredMsFormsParser
         }
 
         var hasClassInfoCount = ResolveClassInfoCountPresence(formControl);
+        var hasEmptySiteData = TryReadEmptyFormSiteData(
+            stream,
+            expectedSiteDataOffset,
+            hasClassInfoCount,
+            out var emptySiteDataEnd);
+        var emptySiteDataIsTerminal = hasEmptySiteData &&
+                                      (emptySiteDataEnd == data.Length ||
+                                       IsDesignExPersisted(formControl) &&
+                                       FormDesignExDataBinary.TryRead(data, emptySiteDataEnd, out _));
+        if (hasEmptySiteData && (parserMode == ParserMode.Strict || emptySiteDataIsTerminal))
+        {
+            AnnotateFormSiteData(
+                stream,
+                formControl,
+                expectedSiteDataOffset,
+                expectedSiteDataOffset,
+                emptySiteDataEnd,
+                recoveredByScan: false);
+            ValidateFormDesignExData(stream, emptySiteDataEnd, parserMode, formControl);
+            return [];
+        }
+
         var candidates = ReadCandidatesAt(stream, expectedSiteDataOffset, hasClassInfoCount);
         var recoveredByScan = false;
         if (candidates.Count == 0 && parserMode != ParserMode.Strict)
@@ -56,6 +78,30 @@ internal static class StructuredMsFormsParser
 
         if (candidates.Count == 0)
         {
+            if (hasEmptySiteData)
+            {
+                AnnotateFormSiteData(
+                    stream,
+                    formControl,
+                    expectedSiteDataOffset,
+                    expectedSiteDataOffset,
+                    emptySiteDataEnd,
+                    recoveredByScan: false);
+                ValidateFormDesignExData(stream, emptySiteDataEnd, parserMode, formControl);
+            }
+            else if (expectedSiteDataOffset == data.Length || IsDesignExPersisted(formControl))
+            {
+                AnnotateFormSiteData(
+                    stream,
+                    formControl,
+                    expectedSiteDataOffset,
+                    expectedSiteDataOffset,
+                    expectedSiteDataOffset,
+                    recoveredByScan: false,
+                    siteDataAbsent: true);
+                ValidateFormDesignExData(stream, expectedSiteDataOffset, parserMode, formControl);
+            }
+
             return [];
         }
 
@@ -66,20 +112,14 @@ internal static class StructuredMsFormsParser
             .First();
 
         var gapByteCount = best.Offset - expectedSiteDataOffset;
-        if (formControl is not null)
-        {
-            formControl.Properties["formSiteDataStartLocalOffset"] = best.Offset;
-            formControl.Properties["formSiteDataGapByteCount"] = gapByteCount;
-            formControl.Properties["formSiteDataBoundaryValidation"] = recoveredByScan ? "recovered" : "exact";
-            formControl.Properties["formSiteDataStartOffset"] = MsFormsBinary.OffsetAt(stream.FileOffsets, best.Offset);
-            if (recoveredByScan)
-            {
-                formControl.Properties["formSiteDataBoundaryWarning"] =
-                    $"Recovered FormSiteData {gapByteCount} byte(s) after the exact FormStreamData boundary.";
-                formControl.Properties["formSiteDataGapHex"] = Convert.ToHexString(
-                    data.AsSpan(expectedSiteDataOffset, Math.Min(gapByteCount, 64)));
-            }
-        }
+        AnnotateFormSiteData(
+            stream,
+            formControl,
+            expectedSiteDataOffset,
+            best.Offset,
+            best.EndOffset,
+            recoveredByScan);
+        ValidateFormDesignExData(stream, best.EndOffset, parserMode, formControl);
 
         foreach (var site in best.Sites)
         {
@@ -125,6 +165,169 @@ internal static class StructuredMsFormsParser
         }
 
         return best.Sites;
+    }
+
+    private static void AnnotateFormSiteData(
+        StorageEntryDump stream,
+        FormControlProperties? formControl,
+        int expectedOffset,
+        int actualOffset,
+        int endOffset,
+        bool recoveredByScan,
+        bool siteDataAbsent = false)
+    {
+        if (formControl is null)
+        {
+            return;
+        }
+
+        var gapByteCount = actualOffset - expectedOffset;
+        formControl.Properties["formSiteDataStartLocalOffset"] = actualOffset;
+        formControl.Properties["formSiteDataEndLocalOffset"] = endOffset;
+        formControl.Properties["formSiteDataGapByteCount"] = gapByteCount;
+        formControl.Properties["formSiteDataBoundaryValidation"] = siteDataAbsent
+            ? "absent"
+            : recoveredByScan ? "recovered" : "exact";
+        formControl.Properties["formSiteDataStartOffset"] = MsFormsBinary.OffsetAt(stream.FileOffsets, actualOffset);
+        formControl.Properties["formSiteDataEndOffset"] = MsFormsBinary.EndOffsetAt(stream.FileOffsets, endOffset);
+        if (recoveredByScan)
+        {
+            formControl.Properties["formSiteDataBoundaryWarning"] =
+                $"Recovered FormSiteData {gapByteCount} byte(s) after the exact FormStreamData boundary.";
+            formControl.Properties["formSiteDataGapHex"] = Convert.ToHexString(
+                stream.Data.AsSpan(expectedOffset, Math.Min(gapByteCount, 64)));
+        }
+    }
+
+    private static bool IsDesignExPersisted(FormControlProperties? formControl) =>
+        GetFormBooleanProperties(formControl) is var bits &&
+        (bits & FormDesignExDataBinary.PersistedFlag) != 0;
+
+    private static uint GetFormBooleanProperties(FormControlProperties? formControl) =>
+        formControl?.Properties.TryGetValue("formBooleanPropertiesRaw", out var raw) == true && raw is uint value
+            ? value
+            : 0x0000_0004u;
+
+    private static void ValidateFormDesignExData(
+        StorageEntryDump stream,
+        int designExOffset,
+        ParserMode parserMode,
+        FormControlProperties? formControl)
+    {
+        if (formControl is null)
+        {
+            return;
+        }
+
+        var data = stream.Data;
+        var persisted = IsDesignExPersisted(formControl);
+        string validation;
+        string? warning = null;
+
+        if (!persisted)
+        {
+            validation = designExOffset == data.Length ? "absent" : "unexpected";
+            if (designExOffset < data.Length)
+            {
+                formControl.Properties["formDesignExUnexpectedData"] =
+                    $"base64:{Convert.ToBase64String(data.AsSpan(designExOffset))}";
+                warning =
+                    $"Found {data.Length - designExOffset} unexpected byte(s) after FormSiteData while FORM_FLAG_DESINKPERSISTED is clear.";
+            }
+        }
+        else if (designExOffset >= data.Length)
+        {
+            validation = "missing";
+            warning = "FORM_FLAG_DESINKPERSISTED is set, but FormDesignExData is missing.";
+        }
+        else if (!FormDesignExDataBinary.TryRead(data, designExOffset, out var designEx))
+        {
+            validation = "invalid";
+            formControl.Properties["formDesignExUnexpectedData"] =
+                $"base64:{Convert.ToBase64String(data.AsSpan(designExOffset))}";
+            warning = "FORM_FLAG_DESINKPERSISTED is set, but FormDesignExData is malformed.";
+        }
+        else
+        {
+            formControl.Properties["formDesignExDataLocalOffset"] = designEx.Start;
+            formControl.Properties["formDesignExDataOffset"] = MsFormsBinary.OffsetAt(stream.FileOffsets, designEx.Start);
+            formControl.Properties["formDesignExDataEndLocalOffset"] = designEx.End;
+            formControl.Properties["formDesignExDataEndOffset"] = MsFormsBinary.EndOffsetAt(stream.FileOffsets, designEx.End);
+            formControl.Properties["formDesignExDataByteCount"] = designEx.Bytes.Length;
+            formControl.Properties["formDesignExMinorVersion"] = designEx.MinorVersion;
+            formControl.Properties["formDesignExMajorVersion"] = designEx.MajorVersion;
+            formControl.Properties["formDesignExCb"] = designEx.Cb;
+            formControl.Properties["formDesignExPropMask"] = $"0x{designEx.PropMask:X8}";
+            formControl.Properties["formDesignExData"] = FormDesignExDataBinary.ToBase64(designEx.Bytes);
+
+            validation = designEx.End == data.Length ? "exact" : "trailing-data";
+            if (designEx.End < data.Length)
+            {
+                formControl.Properties["formDesignExTrailingData"] =
+                    $"base64:{Convert.ToBase64String(data.AsSpan(designEx.End))}";
+                warning = $"Found {data.Length - designEx.End} trailing byte(s) after FormDesignExData.";
+            }
+        }
+
+        formControl.Properties["formDesignExDataValidation"] = validation;
+        formControl.Properties["formStreamStructureValidation"] =
+            validation is "exact" or "absent" ? "exact" : "invalid";
+        if (warning is not null)
+        {
+            formControl.Properties["formDesignExDataWarning"] = warning;
+            if (parserMode == ParserMode.Strict)
+            {
+                throw new CliException(
+                    $"Strict parser mode rejected stream '{stream.Path ?? stream.Name}': {warning}");
+            }
+        }
+    }
+
+    private static bool TryReadEmptyFormSiteData(
+        StorageEntryDump stream,
+        int offset,
+        bool? hasClassInfoCount,
+        out int endOffset)
+    {
+        endOffset = 0;
+        foreach (var withClassInfo in hasClassInfoCount switch
+                 {
+                     true => new[] { true },
+                     false => new[] { false },
+                     _ => new[] { true, false }
+                 })
+        {
+            var cursor = offset;
+            if (withClassInfo)
+            {
+                if (cursor + 2 > stream.Data.Length)
+                {
+                    continue;
+                }
+
+                var classInfoCount = BinaryPrimitives.ReadUInt16LittleEndian(stream.Data.AsSpan(cursor, 2));
+                cursor += 2;
+                if (classInfoCount != 0)
+                {
+                    continue;
+                }
+            }
+
+            if (cursor + 8 > stream.Data.Length)
+            {
+                continue;
+            }
+
+            var countOfSites = BinaryPrimitives.ReadUInt32LittleEndian(stream.Data.AsSpan(cursor, 4));
+            var countOfBytes = BinaryPrimitives.ReadUInt32LittleEndian(stream.Data.AsSpan(cursor + 4, 4));
+            if (countOfSites == 0 && countOfBytes == 0)
+            {
+                endOffset = cursor + 8;
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static bool? ResolveClassInfoCountPresence(FormControlProperties? formControl)

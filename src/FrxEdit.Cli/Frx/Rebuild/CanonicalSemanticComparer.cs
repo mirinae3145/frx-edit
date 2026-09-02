@@ -22,7 +22,7 @@ internal static class CanonicalSemanticComparer
         "proportionalThumb", "logicalWidth", "logicalHeight", "scrollLeft", "scrollTop",
         "logicalWidthPt", "logicalHeightPt", "scrollLeftPt", "scrollTopPt", "tabNames", "tabCaptions",
         "tabTags", "tabTooltips", "tabAccelerators", "tabFlags", "transitionEffect", "transitionPeriod",
-        "formBooleanProperties", "formDrawBuffer", "formSpecialEffect", "listIndex", "tabStyle", "style"
+        "formBooleanProperties", "formDrawBuffer", "formDesignExData", "formSpecialEffect", "listIndex", "tabStyle", "style"
     ];
 
     private static readonly string[] RootProperties =
@@ -32,7 +32,7 @@ internal static class CanonicalSemanticComparer
         "formCaption", "formBackColor", "formForeColor",
         "formBorderColor", "formBorderStyle", "formMousePointer", "formScrollBars", "formCycle",
         "formSpecialEffect", "formPictureAlignment", "formPictureSizeMode", "formZoom",
-        "formPicture", "formMouseIcon", "formBooleanProperties", "formDrawBuffer", "displayedWidth",
+        "formPicture", "formMouseIcon", "formBooleanProperties", "formDrawBuffer", "formDesignExData", "displayedWidth",
         "displayedHeight", "logicalWidth", "logicalHeight", "scrollLeft", "scrollTop", "nextAvailableId",
         "formGroupCount"
     ];
@@ -323,6 +323,11 @@ internal static class CanonicalSemanticComparer
             return TabFlagsFingerprint(left).Equals(TabFlagsFingerprint(right), StringComparison.Ordinal);
         }
 
+        if (propertyName.Equals("formDesignExData", StringComparison.OrdinalIgnoreCase))
+        {
+            return BinaryFingerprint(left).Equals(BinaryFingerprint(right), StringComparison.Ordinal);
+        }
+
         if (propertyName.EndsWith("Picture", StringComparison.OrdinalIgnoreCase) ||
             propertyName.EndsWith("MouseIcon", StringComparison.OrdinalIgnoreCase) ||
             propertyName.Equals("picture", StringComparison.OrdinalIgnoreCase) ||
@@ -413,6 +418,23 @@ internal static class CanonicalSemanticComparer
         catch (FormatException)
         {
             return "picture:invalid-base64";
+        }
+    }
+
+    private static string BinaryFingerprint(object? value)
+    {
+        if (value is not string text || !text.StartsWith("base64:", StringComparison.OrdinalIgnoreCase))
+        {
+            return JsonSerializer.Serialize(value, FrxEditApp.JsonOptions);
+        }
+
+        try
+        {
+            return $"binary:sha256:{Convert.ToHexString(SHA256.HashData(Convert.FromBase64String(text[7..])))}";
+        }
+        catch (FormatException)
+        {
+            return "binary:invalid-base64";
         }
     }
 

@@ -136,6 +136,30 @@ internal sealed class FrxEditApp(TextWriter stdout, TextWriter stderr)
         return groupCount;
     }
 
+    private static object? GetGeneratedRootDesignExData(PatchDocument? patch, string formName)
+    {
+        if (patch?.Properties is null)
+        {
+            return null;
+        }
+
+        Dictionary<string, JsonElement>? properties = null;
+        foreach (var key in new[] { formName, "UserForm", "Form", "root" })
+        {
+            if (patch.Properties.TryGetValue(key, out properties))
+            {
+                break;
+            }
+        }
+
+        if (properties is null || !properties.TryGetValue("formDesignExData", out var requested))
+        {
+            return null;
+        }
+
+        return requested.Clone();
+    }
+
     public int Run(string[] args)
     {
         try
@@ -406,14 +430,16 @@ internal sealed class FrxEditApp(TextWriter stdout, TextWriter stderr)
 
         var outFrxPath = Path.ChangeExtension(outFrmPath, ".frx");
         Directory.CreateDirectory(Path.GetDirectoryName(outFrmPath)!);
+        var generatedRootBooleanProperties = GetGeneratedRootBooleanProperties(patch, formName);
         var generated = GeneratedUserFormFactory.Create(
             formName,
             caption,
             widthPt,
             heightPt,
             Path.GetFileName(outFrxPath),
-            GetGeneratedRootBooleanProperties(patch, formName),
-            GetGeneratedRootGroupCount(patch, formName));
+            generatedRootBooleanProperties,
+            GetGeneratedRootGroupCount(patch, formName),
+            GetGeneratedRootDesignExData(patch, formName));
         File.WriteAllBytes(outFrxPath, generated.FrxBytes);
         File.WriteAllText(outFrmPath, generated.FrmText, Encoding.GetEncoding(1252));
 
@@ -433,8 +459,19 @@ internal sealed class FrxEditApp(TextWriter stdout, TextWriter stderr)
                 var source = FrxBinary.Read(project.FrxPath);
                 var sourceLayout = source.Inspect(project.KnownControlNames, project.ControlScopes, ParserMode.Strict, project.FormProperties);
                 PatchValidator.Validate(patch, sourceLayout.Controls, formName: project.FormName);
-                RebuildPatchApplier.ValidateObjectPatch(patch, allowFormSitePatch: true, formName: project.FormName);
-                var targetLayout = RebuildPatchApplier.ApplyObjectPropertyPatch(sourceLayout, patch, allowFormSitePatch: true, formName: project.FormName, patchDir: patchDir, writerAudit: writerAudit);
+                RebuildPatchApplier.ValidateObjectPatch(
+                    patch,
+                    allowFormSitePatch: true,
+                    formName: project.FormName,
+                    allowGeneratedRootProperties: true);
+                var targetLayout = RebuildPatchApplier.ApplyObjectPropertyPatch(
+                    sourceLayout,
+                    patch,
+                    allowFormSitePatch: true,
+                    formName: project.FormName,
+                    patchDir: patchDir,
+                    writerAudit: writerAudit,
+                    allowGeneratedRootProperties: true);
                 ReconstructionIntentRegistry.Set(
                     targetLayout,
                     ReconstructionIntentBuilder.Build(sourceLayout, targetLayout, patch, project.FormName));
@@ -837,6 +874,14 @@ internal sealed class FrxEditApp(TextWriter stdout, TextWriter stderr)
             if (props is null) return;
             foreach (var key in props.Keys.ToList())
             {
+                if (!key.Equals("picture", StringComparison.OrdinalIgnoreCase) &&
+                    !key.Equals("mouseIcon", StringComparison.OrdinalIgnoreCase) &&
+                    !key.Equals("formPicture", StringComparison.OrdinalIgnoreCase) &&
+                    !key.Equals("formMouseIcon", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
                 if (props[key].ValueKind == JsonValueKind.String)
                 {
                     var s = props[key].GetString();

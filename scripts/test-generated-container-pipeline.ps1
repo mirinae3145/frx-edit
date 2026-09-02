@@ -78,6 +78,7 @@ function Assert-Graph([object]$Patch, [object]$Raw, [object]$Storage) {
     $actual = @($Raw.controls)
     Assert-Condition ($actual.Count -eq $requested.Count) "observable control count must equal the requested count"
     Assert-Condition ($Raw.frxFormControl.formGroupCount -eq 2) "generated root formGroupCount must retain the requested value 2"
+    Assert-Condition ($Raw.frxFormControl.formDesignExDataValidation -eq "absent") "a generated root without FORM_FLAG_DESINKPERSISTED must omit FormDesignExData"
 
     foreach ($request in $requested) {
         $matches = @($actual | Where-Object name -EQ $request.name)
@@ -118,10 +119,17 @@ function Assert-Graph([object]$Patch, [object]$Raw, [object]$Storage) {
     Assert-Condition ($multiPage.properties.value -eq 2) "Tabs must preserve numeric MultiPage value 2"
     Assert-Condition ($multiPage.properties.listIndex -eq 2) "Tabs must project internal TabStrip listIndex 2"
     Assert-Condition (($multiPage.properties.style -eq 1) -and ($multiPage.properties.tabStyle -eq 1)) "Tabs must retain internal TabStrip style 1"
+    Assert-Condition ($multiPage.properties.formDesignExDataValidation -eq "exact") "Tabs FormDesignExData must validate exactly"
+    Assert-Condition ($multiPage.properties.formDesignExData -eq "base64:AAIMABkAAADwjwAA/wEAAA==") "Tabs must use the native-validated MultiPage FormDesignExData"
+    foreach ($pageControl in $pages) {
+        Assert-Condition ($pageControl.properties.formDesignExDataValidation -eq "exact") "'$($pageControl.name)' FormDesignExData must validate exactly"
+        Assert-Condition ($pageControl.properties.formDesignExData -eq "base64:AAIMABkAAADz/wEA/wEAAA==") "'$($pageControl.name)' must use the native-validated Page FormDesignExData"
+    }
 
     foreach ($frameName in @("RootFrame", "PageAFrame")) {
         $frame = $actual | Where-Object name -EQ $frameName
         Assert-Condition ($frame.properties.formSpecialEffect -eq 3) "'$frameName' must retain Frame specialEffect 3"
+        Assert-Condition ($frame.properties.formDesignExDataValidation -eq "absent") "'$frameName' must omit FormDesignExData while the persistence flag is clear"
     }
 
     $contractTabs = $actual | Where-Object name -EQ "ContractTabs"
@@ -630,6 +638,8 @@ try {
     Assert-Condition (($fallbackMultiPage.properties.multiPagePageIds -join ",") -eq ($fallbackPages.properties.multiPagePageId -join ",")) "fallback MultiPage metadata must match effective Page IDs"
     Assert-Condition ($fallbackMultiPage.properties.value -eq 0) "fallback MultiPage selection must default to Page 1"
     Assert-Condition (($fallbackPages.properties.visible -join ",") -eq "True,False") "fallback visibility must agree with the selected Page"
+    Assert-Condition ($fallbackMultiPage.properties.formDesignExDataValidation -eq "exact") "fallback MultiPage FormDesignExData must validate exactly"
+    Assert-Condition (($fallbackPages.properties.formDesignExDataValidation -join ",") -eq "exact,exact") "empty fallback Pages must validate FormDesignExData exactly"
 
     Write-Host "PASS: generated-container graph planning, ordering, stream participation, and fallback Pages"
     $completed = $true

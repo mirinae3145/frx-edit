@@ -99,7 +99,7 @@ dotnet run --project tests/FrxEdit.Tests/FrxEdit.Tests.csproj -c Release
 ./scripts/test-generated-container-pipeline.ps1 -Configuration Release
 ```
 
-The focused executable regression checks exact `GuidAndFont` serialization and rejects a deliberately malformed gap between `FormStreamData` and `FormSiteData`. The generated-container suite also requires every generated Frame and MultiPage font stream and SiteData boundary to consume exactly.
+The focused executable regression checks exact `GuidAndFont` serialization and validates the complete FormStreamData/FormSiteData/optional FormDesignExData sequence, including persistence-flag consistency. The generated-container suite also requires generated Frame, MultiPage, and Page boundaries and persisted DesignExtender structures to consume exactly.
 
 The canonical test always exercises `test_data/forms/original/userformallcontrol`. To run the external nine-form IguanaTex corpus as well:
 

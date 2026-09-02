@@ -34,7 +34,7 @@ $semanticPropertyNames = @(
     "delay", "proportionalThumb", "logicalWidth", "logicalHeight", "scrollLeft", "scrollTop",
     "logicalWidthPt", "logicalHeightPt", "scrollLeftPt", "scrollTopPt", "tabNames",
     "tabCaptions", "tabTags", "tabTooltips", "tabAccelerators", "tabFlags", "transitionEffect",
-    "transitionPeriod", "formBooleanProperties", "formDrawBuffer", "formSpecialEffect",
+    "transitionPeriod", "formBooleanProperties", "formDrawBuffer", "formDesignExData", "formSpecialEffect",
     "listIndex", "tabStyle", "style"
 )
 
@@ -43,7 +43,7 @@ $rootPropertyNames = @(
     "ShowModal", "Tag", "Left", "Top", "Width", "Height", "DrawBuffer", "WhatsThisButton", "WhatsThisHelp", "formBackColor",
     "formForeColor", "formBorderColor", "formCaption", "formBorderStyle", "formMousePointer",
     "formScrollBars", "formCycle", "formSpecialEffect", "formPictureAlignment",
-    "formPictureSizeMode", "formZoom", "formPicture", "formMouseIcon", "formBooleanProperties", "formDrawBuffer",
+    "formPictureSizeMode", "formZoom", "formPicture", "formMouseIcon", "formBooleanProperties", "formDrawBuffer", "formDesignExData",
     "displayedWidth", "displayedHeight", "logicalWidth", "logicalHeight", "scrollLeft", "scrollTop", "nextAvailableId",
     "formGroupCount"
 )
@@ -113,6 +113,22 @@ function Convert-PictureValue([object]$Value) {
     return "sha256:" + ([BitConverter]::ToString($digest) -replace "-", "").ToLowerInvariant()
 }
 
+function Convert-BinaryValue([object]$Value) {
+    if ($Value -isnot [string] -or -not $Value.StartsWith("base64:", [StringComparison]::OrdinalIgnoreCase)) {
+        return $Value
+    }
+
+    $bytes = [Convert]::FromBase64String($Value.Substring(7))
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try {
+        $digest = $sha256.ComputeHash($bytes)
+    }
+    finally {
+        $sha256.Dispose()
+    }
+    return "sha256:" + ([BitConverter]::ToString($digest) -replace "-", "").ToLowerInvariant()
+}
+
 function Convert-ComparableValue([string]$PropertyName, [object]$Value) {
     if ($PropertyName -eq "siteBitFlags") {
         if ($Value -is [string] -and $Value.StartsWith("0x", [StringComparison]::OrdinalIgnoreCase)) {
@@ -123,6 +139,10 @@ function Convert-ComparableValue([string]$PropertyName, [object]$Value) {
 
     if ($PropertyName -in @("picture", "mouseIcon", "formPicture", "formMouseIcon")) {
         return Convert-PictureValue $Value
+    }
+
+    if ($PropertyName -eq "formDesignExData") {
+        return Convert-BinaryValue $Value
     }
 
     if ($PropertyName -eq "tabFlags") {

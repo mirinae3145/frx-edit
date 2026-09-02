@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json;
 
 static void Assert(bool condition, string message)
 {
@@ -6,6 +7,27 @@ static void Assert(bool condition, string message)
     {
         throw new InvalidOperationException($"Assertion failed: {message}");
     }
+}
+
+static void AssertThrows<TException>(Action action, string message, string? expectedText = null)
+    where TException : Exception
+{
+    try
+    {
+        action();
+    }
+    catch (TException ex)
+    {
+        if (expectedText is not null && !ex.Message.Contains(expectedText, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                $"Assertion failed: {message}. Exception did not contain '{expectedText}': {ex.Message}");
+        }
+
+        return;
+    }
+
+    throw new InvalidOperationException($"Assertion failed: {message}. Expected {typeof(TException).Name}.");
 }
 
 static StorageEntryDump Stream(byte[] data) => new(
@@ -121,6 +143,175 @@ Assert(
 Assert(
     Convert.ToInt32(formControl.Properties["formSiteDataGapByteCount"]) == 0,
     "generated MultiPage must not contain bytes between FormStreamData and FormSiteData");
+Assert(
+    (string?)formControl.Properties["formDesignExDataValidation"] == "exact",
+    "generated MultiPage FormDesignExData must validate exactly");
+Assert(
+    (string?)formControl.Properties["formDesignExData"] == "base64:AAIMABkAAADwjwAA/wEAAA==",
+    "generated MultiPage must use the native-validated default FormDesignExData");
+
+var pageControl = GeneratedStorageFactory.CreatePage(
+    "Page1",
+    3,
+    0,
+    4_000,
+    3_000,
+    "Root Entry/i02/i03",
+    0x0004_0021u);
+var pageStream = Stream(pageControl.FStream);
+Assert(FormControlParser.TryRead(pageStream, out var pageFormControl), "generated Page FormControl must parse");
+Assert(
+    StructuredMsFormsParser.Parse(pageStream, ParserMode.Strict, pageFormControl).Count == 0,
+    "generated empty Page must strict-parse with no sites");
+Assert(
+    (string?)pageFormControl.Properties["formDesignExData"] == "base64:AAIMABkAAADz/wEA/wEAAA==",
+    "generated Page must use the native-validated container FormDesignExData");
+
+var frameControlBytes = GeneratedStorageFactory.CreateFrame(
+    "Frame1",
+    4,
+    0,
+    0,
+    0,
+    4_000,
+    3_000,
+    null,
+    "Root Entry/i04",
+    new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+    {
+        ["formBooleanProperties"] = "0x0000C004"
+    });
+var frameStream = Stream((byte[])frameControlBytes.Metadata["generatedStorageF"]!);
+Assert(FormControlParser.TryRead(frameStream, out var frameFormControl), "generated Frame FormControl must parse");
+Assert(
+    StructuredMsFormsParser.Parse(frameStream, ParserMode.Strict, frameFormControl).Count == 0,
+    "generated empty Frame must strict-parse without FormSiteData");
+Assert(
+    (string?)frameFormControl.Properties["formDesignExData"] == "base64:AAIMABkAAADz/wEA/wEAAA==",
+    "generated Frame must use the native-validated container FormDesignExData");
+
+var missingDesignExBytes = formBytes[..^16];
+var missingDesignExStream = Stream(missingDesignExBytes);
+Assert(FormControlParser.TryRead(missingDesignExStream, out var missingDesignExControl), "missing DesignExtender fixture must parse its FormControl");
+AssertThrows<CliException>(
+    () => StructuredMsFormsParser.Parse(missingDesignExStream, ParserMode.Strict, missingDesignExControl),
+    "strict parsing must reject a missing persisted FormDesignExData",
+    "missing");
+var missingDesignExSites = StructuredMsFormsParser.Parse(missingDesignExStream, ParserMode.Tolerant, missingDesignExControl);
+Assert(missingDesignExSites.Count == 2, "tolerant parsing must retain sites when FormDesignExData is missing");
+Assert(
+    (string?)missingDesignExControl.Properties["formDesignExDataValidation"] == "missing",
+    "tolerant parsing must report missing FormDesignExData precisely");
+
+var noPersistMultiPage = GeneratedStorageFactory.CreateMultiPage(
+    "TabsWithoutDesignEx",
+    6,
+    0,
+    0,
+    0,
+    5_000,
+    4_000,
+    "Root Entry/i06",
+    [page],
+    0,
+    new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+    {
+        ["formBooleanProperties"] = "0x00008004"
+    });
+byte[] unexpectedDesignExBytes = [
+    .. (byte[])noPersistMultiPage.Metadata["generatedStorageF"]!,
+    .. Convert.FromHexString("00020C0019000000F37F0100FF010000")
+];
+var unexpectedDesignExStream = Stream(unexpectedDesignExBytes);
+Assert(FormControlParser.TryRead(unexpectedDesignExStream, out var unexpectedDesignExControl), "unexpected DesignExtender fixture must parse its FormControl");
+AssertThrows<CliException>(
+    () => StructuredMsFormsParser.Parse(unexpectedDesignExStream, ParserMode.Strict, unexpectedDesignExControl),
+    "strict parsing must reject FormDesignExData when the persistence flag is clear",
+    "unexpected");
+StructuredMsFormsParser.Parse(unexpectedDesignExStream, ParserMode.Tolerant, unexpectedDesignExControl);
+Assert(
+    (string?)unexpectedDesignExControl.Properties["formDesignExDataValidation"] == "unexpected",
+    "tolerant parsing must report unexpected FormDesignExData precisely");
+
+var trailingDesignExStream = Stream([.. formBytes, 0xA5]);
+Assert(FormControlParser.TryRead(trailingDesignExStream, out var trailingDesignExControl), "trailing-data fixture must parse its FormControl");
+AssertThrows<CliException>(
+    () => StructuredMsFormsParser.Parse(trailingDesignExStream, ParserMode.Strict, trailingDesignExControl),
+    "strict parsing must reject trailing data after FormDesignExData",
+    "trailing");
+
+AssertThrows<CliException>(
+    () => FormDesignExDataBinary.ResolveForGeneration(
+        0x0000_0004u,
+        "base64:AAIMABkAAADzfwEA/wEAAA==",
+        FormDesignExDefaultKind.UserForm,
+        "FlagMismatch"),
+    "explicit FormDesignExData must be rejected when the persistence flag is clear",
+    "requires FORM_FLAG_DESINKPERSISTED");
+
+var clearPersistencePatch = new PatchDocument
+{
+    Properties = new Dictionary<string, Dictionary<string, JsonElement>>(StringComparer.OrdinalIgnoreCase)
+    {
+        ["TestForm"] = new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["formBooleanProperties"] = JsonSerializer.SerializeToElement("0x00000004")
+        }
+    }
+};
+var clearedPersistenceLayout = RebuildPatchApplier.ApplyObjectPropertyPatch(
+    new LayoutInspection(
+        [],
+        new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["formBooleanProperties"] = "0x00004004",
+            ["formBooleanPropertiesRawOffset"] = 12,
+            ["formDesignExData"] = "base64:AAIMABkAAADzfwEA/wEAAA=="
+        }),
+    clearPersistencePatch,
+    formName: "TestForm");
+Assert(
+    clearedPersistenceLayout.FrxFormControl?.ContainsKey("formDesignExData") == false,
+    "clearing FORM_FLAG_DESINKPERSISTED must remove FormDesignExData from the reconstruction target");
+
+var setPersistencePatch = new PatchDocument
+{
+    Properties = new Dictionary<string, Dictionary<string, JsonElement>>(StringComparer.OrdinalIgnoreCase)
+    {
+        ["TestForm"] = new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["formBooleanProperties"] = JsonSerializer.SerializeToElement("0x00004004")
+        }
+    }
+};
+var setPersistenceLayout = RebuildPatchApplier.ApplyObjectPropertyPatch(
+    new LayoutInspection(
+        [],
+        new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["formBooleanProperties"] = "0x00000004",
+            ["formBooleanPropertiesRawOffset"] = 12
+        }),
+    setPersistencePatch,
+    formName: "TestForm");
+Assert(
+    (string?)setPersistenceLayout.FrxFormControl?["formDesignExData"] == "base64:AAIMABkAAADzfwEA/wEAAA==",
+    "setting FORM_FLAG_DESINKPERSISTED must synthesize the native-validated UserForm FormDesignExData");
+
+var opaqueInPlacePatch = new PatchDocument
+{
+    Properties = new Dictionary<string, Dictionary<string, JsonElement>>(StringComparer.OrdinalIgnoreCase)
+    {
+        ["TestForm"] = new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["formDesignExData"] = JsonSerializer.SerializeToElement("base64:AAIMABkAAADzfwEA/wEAAA==")
+        }
+    }
+};
+AssertThrows<CliException>(
+    () => RebuildPatchApplier.ValidateObjectPatch(opaqueInPlacePatch, formName: "TestForm"),
+    "opaque FormDesignExData must remain unavailable to in-place root patches",
+    "not supported");
 
 var tabStripBytes = (byte[])multiPage.Metadata["generatedStorageO"]!;
 var tabStrip = ObjectStreamParser.Read(Stream(tabStripBytes), "TabStrip");
@@ -132,8 +323,8 @@ Assert(Convert.ToInt32(parsedTabStrip.Properties["tabData"]) == 1, "TabData must
 var malformedBytes = Insert(formBytes, formControl.FormStreamDataEndLocalOffset, new byte[8]);
 var malformedStream = Stream(malformedBytes);
 Assert(FormControlParser.TryRead(malformedStream, out var malformedFormControl), "malformed fixture FormControl prefix must parse");
-Assert(
-    StructuredMsFormsParser.Parse(malformedStream, ParserMode.Strict, malformedFormControl).Count == 0,
+AssertThrows<CliException>(
+    () => StructuredMsFormsParser.Parse(malformedStream, ParserMode.Strict, malformedFormControl),
     "strict parsing must reject bytes between FormStreamData and FormSiteData");
 var recoveredSites = StructuredMsFormsParser.Parse(malformedStream, ParserMode.Tolerant, malformedFormControl);
 Assert(recoveredSites.Count == 2, "tolerant parsing may recover the deliberately malformed SiteData");
@@ -147,4 +338,4 @@ Assert(
     (string?)malformedFormControl.Properties["formSiteDataGapHex"] == "0000000000000000",
     "tolerant parsing must report the recovered gap bytes");
 
-Console.WriteLine("PASS: GuidAndFont serialization and exact FormStreamData/FormSiteData boundaries");
+Console.WriteLine("PASS: GuidAndFont serialization and exact FormStreamData/FormSiteData/FormDesignExData boundaries");

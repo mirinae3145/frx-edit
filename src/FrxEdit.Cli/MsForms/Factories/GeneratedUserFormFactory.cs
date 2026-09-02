@@ -9,7 +9,8 @@ internal static class GeneratedUserFormFactory
         double heightPt,
         string frxFileName,
         uint? formBooleanProperties = null,
-        int? formGroupCount = null)
+        int? formGroupCount = null,
+        object? formDesignExData = null)
     {
         if (formGroupCount is < 0)
         {
@@ -18,12 +19,24 @@ internal static class GeneratedUserFormFactory
 
         var width = ToRawPoints(widthPt);
         var height = ToRawPoints(heightPt);
-        var ole = CompoundStorageRebuilder.BuildFromDump(BuildDump(width, height, formBooleanProperties, formGroupCount));
+        var ole = CompoundStorageRebuilder.BuildFromDump(BuildDump(
+            width,
+            height,
+            formBooleanProperties,
+            formGroupCount,
+            formDesignExData,
+            formName));
         var frx = BuildFrxWrapper(ole, widthPt, heightPt);
         return (frx, BuildFrm(formName, caption, widthPt, heightPt, frxFileName));
     }
 
-    private static CompoundStorageDump BuildDump(int width, int height, uint? formBooleanProperties, int? formGroupCount)
+    private static CompoundStorageDump BuildDump(
+        int width,
+        int height,
+        uint? formBooleanProperties,
+        int? formGroupCount,
+        object? formDesignExData,
+        string formName)
     {
         var root = new StorageEntryDump(
             0,
@@ -48,13 +61,25 @@ internal static class GeneratedUserFormFactory
             0,
             [
                 root,
-                CreateStream("Root Entry/f", "f", BuildRootFormStream(width, height, formBooleanProperties, formGroupCount)),
+                CreateStream("Root Entry/f", "f", BuildRootFormStream(
+                    width,
+                    height,
+                    formBooleanProperties,
+                    formGroupCount,
+                    formDesignExData,
+                    formName)),
                 CreateStream("Root Entry/o", "o", []),
                 CreateStream("Root Entry/\u0001CompObj", "\u0001CompObj", MsFormsCompObjFactory.Form)
             ]);
     }
 
-    private static byte[] BuildRootFormStream(int width, int height, uint? formBooleanProperties, int? formGroupCount)
+    private static byte[] BuildRootFormStream(
+        int width,
+        int height,
+        uint? formBooleanProperties,
+        int? formGroupCount,
+        object? formDesignExData,
+        string formName)
     {
         using var dataBlock = new MemoryStream();
         MsFormsFactoryBinary.WriteUInt32(dataBlock, 1);
@@ -89,7 +114,13 @@ internal static class GeneratedUserFormFactory
         MsFormsFactoryBinary.WriteUInt32(siteData, 0);
         MsFormsFactoryBinary.WriteUInt32(siteData, 0);
 
-        return [.. formControl.ToArray(), .. siteData.ToArray()];
+        var designExData = FormDesignExDataBinary.ResolveForGeneration(
+            formBooleanProperties ?? 0x0000_0004u,
+            formDesignExData,
+            FormDesignExDefaultKind.UserForm,
+            formName);
+
+        return [.. formControl.ToArray(), .. siteData.ToArray(), .. designExData];
     }
 
     private static byte[] BuildFrxWrapper(byte[] ole, double widthPt, double heightPt)

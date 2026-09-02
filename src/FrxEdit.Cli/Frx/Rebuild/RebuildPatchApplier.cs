@@ -213,9 +213,16 @@ internal static class RebuildPatchApplier
         "pageNames", "pageCaptions"
     ];
 
-    public static LayoutInspection ApplyObjectPropertyPatch(LayoutInspection source, PatchDocument patch, bool allowFormSitePatch = false, string? formName = null, string? patchDir = null, WriterProvenanceAuditCollector? writerAudit = null)
+    public static LayoutInspection ApplyObjectPropertyPatch(
+        LayoutInspection source,
+        PatchDocument patch,
+        bool allowFormSitePatch = false,
+        string? formName = null,
+        string? patchDir = null,
+        WriterProvenanceAuditCollector? writerAudit = null,
+        bool allowGeneratedRootProperties = false)
     {
-        ValidateObjectPatch(patch, allowFormSitePatch, formName);
+        ValidateObjectPatch(patch, allowFormSitePatch, formName, allowGeneratedRootProperties);
 
         if ((patch.Properties is null || patch.Properties.Count == 0) &&
             (!allowFormSitePatch || patch.Layout is null || patch.Layout.Count == 0) &&
@@ -619,8 +626,17 @@ internal static class RebuildPatchApplier
         return page.Name;
     }
 
-    public static void ValidateObjectPatch(PatchDocument patch, bool allowFormSitePatch = false, string? formName = null)
+    public static void ValidateObjectPatch(
+        PatchDocument patch,
+        bool allowFormSitePatch = false,
+        string? formName = null,
+        bool allowGeneratedRootProperties = false)
     {
+        var generatedTypesByName = (patch.Add ?? [])
+            .Where(add => !string.IsNullOrWhiteSpace(add.Name) && !string.IsNullOrWhiteSpace(add.Type))
+            .GroupBy(add => add.Name!, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.Last().Type!, StringComparer.OrdinalIgnoreCase);
+
         if (patch.Add is { Count: > 0 } && !allowFormSitePatch)
         {
             throw new CliException("Rebuild object-patch does not support 'add' because new controls require FormSiteData rebuild. Use '--stream-mode full-patch'.");
@@ -657,14 +673,21 @@ internal static class RebuildPatchApplier
             {
                 if (isForm)
                 {
-                    if (!RootFormPropertyNames.Contains(propertyName))
+                    if (!RootFormPropertyNames.Contains(propertyName) &&
+                        !(allowGeneratedRootProperties && SupportsGeneratedRootProperty(propertyName)))
                     {
                         throw new CliException($"Property '{propertyName}' is not supported for the root UserForm.");
                     }
                 }
                 else
                 {
-                    if (!ObjectPropertyNames.Contains(propertyName) && !(allowFormSitePatch && FormSitePropertyNames.Contains(propertyName)))
+                    var generatedProperty =
+                        allowFormSitePatch &&
+                        generatedTypesByName.TryGetValue(controlName, out var generatedType) &&
+                        SupportsGeneratedObjectProperty(generatedType, propertyName);
+                    if (!ObjectPropertyNames.Contains(propertyName) &&
+                        !(allowFormSitePatch && FormSitePropertyNames.Contains(propertyName)) &&
+                        !generatedProperty)
                     {
                         throw new CliException($"Property '{propertyName}' is not supported for control '{controlName}'.");
                     }
@@ -1104,7 +1127,14 @@ internal static class RebuildPatchApplier
         {
             foreach (var (propertyName, propertyValue) in OrderPropertyApplications(requestedProperties))
             {
-                ApplyPropertyToDictionary(entry.Name, entry.Type, props, propertyName, propertyValue, patchDir);
+                ApplyPropertyToDictionary(
+                    entry.Name,
+                    entry.Type,
+                    props,
+                    propertyName,
+                    propertyValue,
+                    patchDir,
+                    allowGeneratedProperties: true);
             }
         }
 
@@ -1381,7 +1411,13 @@ internal static class RebuildPatchApplier
                 GeneratedControlFactory.SynchronizeSiteFlagMetadata(props, generated.SiteFlags);
                 props["formControlParser"] = "msOFormsFormControl";
                 props["formPropMask"] = "0x0C000C48";
-                props["formBooleanProperties"] = $"0x{(MsFormsFactoryBinary.GetUInt32(props, "formBooleanProperties") ?? 0x0000_C004u):X8}";
+                var pageFormBooleanProperties = MsFormsFactoryBinary.GetUInt32(props, "formBooleanProperties") ?? 0x0000_C004u;
+                props["formBooleanProperties"] = $"0x{pageFormBooleanProperties:X8}";
+                SynchronizeFormDesignExMetadata(
+                    props,
+                    pageFormBooleanProperties,
+                    FormDesignExDefaultKind.Container,
+                    name);
                 props["formDrawBuffer"] = MsFormsFactoryBinary.GetUInt32(props, "formDrawBuffer") ?? 32_000u;
                 props["sizeSource"] = "formControlDisplayedSize";
                 props["displayedWidth"] = rawWidth ?? 0;
@@ -1572,7 +1608,13 @@ internal static class RebuildPatchApplier
                     GeneratedControlFactory.SynchronizeSiteFlagMetadata(pageProps, page.SiteFlags);
                     pageProps["formControlParser"] = "msOFormsFormControl";
                     pageProps["formPropMask"] = "0x0C000C48";
-                    pageProps["formBooleanProperties"] = $"0x{(MsFormsFactoryBinary.GetUInt32(pageProps, "formBooleanProperties") ?? 0x0000_C004u):X8}";
+                    var pageFormBooleanProperties = MsFormsFactoryBinary.GetUInt32(pageProps, "formBooleanProperties") ?? 0x0000_C004u;
+                    pageProps["formBooleanProperties"] = $"0x{pageFormBooleanProperties:X8}";
+                    SynchronizeFormDesignExMetadata(
+                        pageProps,
+                        pageFormBooleanProperties,
+                        FormDesignExDefaultKind.Container,
+                        page.Name);
                     pageProps["formDrawBuffer"] = MsFormsFactoryBinary.GetUInt32(pageProps, "formDrawBuffer") ?? 32_000u;
                     pageProps["sizeSource"] = "formControlDisplayedSize";
                     pageProps["displayedWidth"] = explicitPage?.Width ?? rawWidth ?? 0;
@@ -2150,7 +2192,15 @@ internal static class RebuildPatchApplier
                 props["fontStrikethrough"] = (fontEffects & (1u << 3)) != 0;
                 break;
             case "formbooleanproperties":
-                SetFormBooleanProperties(props, RequireUInt32Like(controlName, propertyName, value));
+                var formBooleanProperties = RequireUInt32Like(controlName, propertyName, value);
+                SetFormBooleanProperties(props, formBooleanProperties);
+                SynchronizeFormDesignExMetadata(
+                    props,
+                    formBooleanProperties,
+                    controlType.Equals("MultiPage", StringComparison.OrdinalIgnoreCase)
+                        ? FormDesignExDefaultKind.MultiPage
+                        : FormDesignExDefaultKind.Container,
+                    controlName);
                 break;
             case "formdrawbuffer":
             case "drawbuffer":
@@ -2416,6 +2466,10 @@ internal static class RebuildPatchApplier
                 props["fontWeight"] = fontWeight;
                 props["fontBold"] = fontWeight >= 700;
                 break;
+            case "formdesignexdata":
+                props["formDesignExData"] = FormDesignExDataBinary.ToBase64(
+                    FormDesignExDataBinary.DecodeAndValidate(value, controlName));
+                break;
             default:
                 throw new CliException($"Property '{propertyName}' is not supported for control '{controlName}'.");
         }
@@ -2571,7 +2625,15 @@ internal static class RebuildPatchApplier
                 props["tabFlags"] = value.Clone();
                 break;
             case "formbooleanproperties":
-                SetFormBooleanProperties(props, RequireUInt32Like(controlName, propertyName, value));
+                var formBooleanProperties = RequireUInt32Like(controlName, propertyName, value);
+                SetFormBooleanProperties(props, formBooleanProperties);
+                SynchronizeFormDesignExMetadata(
+                    props,
+                    formBooleanProperties,
+                    controlType.Equals("MultiPage", StringComparison.OrdinalIgnoreCase)
+                        ? FormDesignExDefaultKind.MultiPage
+                        : FormDesignExDefaultKind.Container,
+                    controlName);
                 break;
             case "formdrawbuffer":
             case "drawbuffer":
@@ -3112,6 +3174,10 @@ internal static class RebuildPatchApplier
         props["pictureTiling"] = (bits & (1u << 4)) != 0;
         props["keepScrollBarsVisible"] = (bits & (1u << 21)) != 0;
         props["rightToLeft"] = (bits & (1u << 22)) != 0;
+        if ((bits & FormDesignExDataBinary.PersistedFlag) == 0)
+        {
+            props.Remove("formDesignExData");
+        }
     }
 
     private static void ApplyFormPropertyToDictionary(string formKey, Dictionary<string, object?> props, string propertyName, JsonElement value, string? patchDir)
@@ -3164,7 +3230,13 @@ internal static class RebuildPatchApplier
                 props[CanonicalPropertyName(normalizedPropertyName)] = RequireString(formKey, normalizedPropertyName, value);
                 break;
             case "formbooleanproperties":
-                SetFormBooleanProperties(props, RequireUInt32Like(formKey, normalizedPropertyName, value));
+                var formBooleanProperties = RequireUInt32Like(formKey, normalizedPropertyName, value);
+                SetFormBooleanProperties(props, formBooleanProperties);
+                SynchronizeFormDesignExMetadata(
+                    props,
+                    formBooleanProperties,
+                    FormDesignExDefaultKind.UserForm,
+                    formKey);
                 break;
             case "enabled":
             case "picturetiling":
@@ -3251,6 +3323,10 @@ internal static class RebuildPatchApplier
             case "formdrawbuffer":
                 props["formDrawBuffer"] = RequireUInt32Like(formKey, normalizedPropertyName, value);
                 break;
+            case "formdesignexdata":
+                props["formDesignExData"] = FormDesignExDataBinary.ToBase64(
+                    FormDesignExDataBinary.DecodeAndValidate(value, formKey));
+                break;
             default:
                 throw new CliException($"Property '{propertyName}' is not supported for the root UserForm '{formKey}'.");
         }
@@ -3326,10 +3402,37 @@ internal static class RebuildPatchApplier
 
     internal static bool SupportsGeneratedObjectProperty(string controlType, string propertyName) =>
         SupportsExportedObjectProperty(controlType, propertyName) ||
-        controlType.Equals("Frame", StringComparison.OrdinalIgnoreCase) && FontPropertyNames.Contains(propertyName, StringComparer.OrdinalIgnoreCase);
+        controlType.Equals("Frame", StringComparison.OrdinalIgnoreCase) && FontPropertyNames.Contains(propertyName, StringComparer.OrdinalIgnoreCase) ||
+        IsContainerControlType(controlType) && propertyName.Equals("formDesignExData", StringComparison.OrdinalIgnoreCase);
 
     internal static bool SupportsExportedRootProperty(string propertyName) =>
         RootFormPropertyNames.Contains(propertyName);
+
+    internal static bool SupportsGeneratedRootProperty(string propertyName) =>
+        SupportsExportedRootProperty(propertyName) ||
+        propertyName.Equals("formDesignExData", StringComparison.OrdinalIgnoreCase);
+
+    private static void SynchronizeFormDesignExMetadata(
+        Dictionary<string, object?> properties,
+        uint formBooleanProperties,
+        FormDesignExDefaultKind defaultKind,
+        string owner)
+    {
+        properties.TryGetValue("formDesignExData", out var requested);
+        var bytes = FormDesignExDataBinary.ResolveForGeneration(
+            formBooleanProperties,
+            requested,
+            defaultKind,
+            owner);
+        if (bytes.Length == 0)
+        {
+            properties.Remove("formDesignExData");
+        }
+        else
+        {
+            properties["formDesignExData"] = FormDesignExDataBinary.ToBase64(bytes);
+        }
+    }
 
     private static bool IsContainerControlType(string controlType) =>
         controlType.Equals("Frame", StringComparison.OrdinalIgnoreCase) ||

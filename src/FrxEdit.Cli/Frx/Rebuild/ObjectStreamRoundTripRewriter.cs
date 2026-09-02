@@ -196,6 +196,12 @@ internal static class ObjectStreamRoundTripRewriter
 
                     var tempStream = stream with { Data = patched };
                     PatchRootFormScalars(tempStream, layout.FrxFormControl, patched);
+                    patched = SynchronizeFormDesignExData(
+                        stream,
+                        patched,
+                        layout.FrxFormControl,
+                        FormDesignExDefaultKind.UserForm,
+                        "UserForm");
                     changed = true;
                 }
 
@@ -214,6 +220,14 @@ internal static class ObjectStreamRoundTripRewriter
 
                         var tempStream = stream with { Data = patched };
                         PatchRootFormScalars(tempStream, container.Properties, patched);
+                        patched = SynchronizeFormDesignExData(
+                            stream,
+                            patched,
+                            container.Properties,
+                            container.Type.Equals("MultiPage", StringComparison.OrdinalIgnoreCase)
+                                ? FormDesignExDefaultKind.MultiPage
+                                : FormDesignExDefaultKind.Container,
+                            container.Name);
                         changed = true;
                     }
                 }
@@ -1202,7 +1216,9 @@ internal static class ObjectStreamRoundTripRewriter
         {
             if (allOriginalSlices.Count == 0)
             {
-                var rebuiltEmpty = TryRewriteEmptyFormSiteData(formStream, additions);
+                var ownerContainer = controls.FirstOrDefault(control =>
+                    IsContainerControl(control) && IsOwnedContainerFormStream(control, formStream.Path));
+                var rebuiltEmpty = TryRewriteEmptyFormSiteData(formStream, additions, ownerContainer);
                 if (rebuiltEmpty is not null)
                 {
                     return rebuiltEmpty;
@@ -1317,7 +1333,10 @@ internal static class ObjectStreamRoundTripRewriter
         return rebuilt;
     }
 
-    private static byte[]? TryRewriteEmptyFormSiteData(StorageEntryDump formStream, IReadOnlyList<FormSiteSlice> additions)
+    private static byte[]? TryRewriteEmptyFormSiteData(
+        StorageEntryDump formStream,
+        IReadOnlyList<FormSiteSlice> additions,
+        ControlInfo? ownerContainer)
     {
         if (additions.Count == 0)
         {
@@ -1325,45 +1344,47 @@ internal static class ObjectStreamRoundTripRewriter
         }
 
         var data = formStream.Data;
-        if (data.Length < 12 || data[0] != 0x00 || data[1] != 0x04)
+        if (!FormControlParser.TryRead(formStream, out var formControl))
         {
             return null;
         }
 
-        var cbForm = BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan(2, 2));
-        var siteDataOffset = 4 + cbForm;
-        if (siteDataOffset < 0 || siteDataOffset + 8 > data.Length)
+        var siteDataOffset = formControl.FormStreamDataEndLocalOffset;
+        if (siteDataOffset < 0 || siteDataOffset > data.Length)
         {
             return null;
         }
 
-        var hasClassInfoCount = false;
-        var countOfSites = BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(siteDataOffset, 4));
-        var countOfBytes = BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(siteDataOffset + 4, 4));
-        if (siteDataOffset + 10 <= data.Length)
+        var formBooleanProperties = MsFormsFactoryBinary.GetUInt32(
+                formControl.Properties,
+                "formBooleanPropertiesRaw")
+            ?? 0u;
+        var hasClassInfoCount = (formBooleanProperties & 0x0000_8000u) == 0;
+        var emptySiteDataEnd = siteDataOffset;
+        if (hasClassInfoCount)
         {
-            var classInfoCount = BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan(siteDataOffset, 2));
-            var countOfSitesWithClassInfo = BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(siteDataOffset + 2, 4));
-            var countOfBytesWithClassInfo = BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(siteDataOffset + 6, 4));
-            if (classInfoCount == 0 &&
-                countOfSitesWithClassInfo == 0 &&
-                countOfBytesWithClassInfo == 0 &&
-                (countOfSites != 0 || countOfBytes != 0 || data.Length == siteDataOffset + 10))
+            if (siteDataOffset + 10 <= data.Length &&
+                BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan(siteDataOffset, 2)) == 0 &&
+                BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(siteDataOffset + 2, 4)) == 0 &&
+                BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(siteDataOffset + 6, 4)) == 0)
             {
-                countOfSites = countOfSitesWithClassInfo;
-                countOfBytes = countOfBytesWithClassInfo;
-                hasClassInfoCount = true;
+                emptySiteDataEnd = siteDataOffset + 10;
             }
         }
-
-        var appendSiteData = false;
-        if (countOfSites != 0 || countOfBytes != 0)
+        else if (siteDataOffset + 8 <= data.Length &&
+                 BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(siteDataOffset, 4)) == 0 &&
+                 BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(siteDataOffset + 4, 4)) == 0)
         {
-            appendSiteData = true;
-            hasClassInfoCount = false;
+            emptySiteDataEnd = siteDataOffset + 8;
         }
 
-        var appendPageTail = IsEmptyGeneratedPageFormStream(data, siteDataOffset, countOfSites, countOfBytes);
+        object? existingDesignExData = null;
+        if ((formBooleanProperties & FormDesignExDataBinary.PersistedFlag) != 0 &&
+            FormDesignExDataBinary.TryRead(data, emptySiteDataEnd, out var designEx) &&
+            designEx.End == data.Length)
+        {
+            existingDesignExData = FormDesignExDataBinary.ToBase64(designEx.Bytes);
+        }
 
         using var payload = new MemoryStream();
         var depthBytes = SerializeSiteDepthsAndTypes(additions.Select(addition => addition.Control).ToList(), formStream.Path);
@@ -1380,14 +1401,18 @@ internal static class ObjectStreamRoundTripRewriter
         }
 
         using var output = new MemoryStream();
-        if (appendSiteData &&
-            TryPromoteEmptyFrameFormControl(data, additions.Select(addition => addition.Control), out var promotedFramePrefix))
+        if (ownerContainer?.Type.Equals("Frame", StringComparison.OrdinalIgnoreCase) == true &&
+            TryPromoteEmptyFrameFormControl(
+                data,
+                siteDataOffset,
+                additions.Select(addition => addition.Control),
+                out var promotedFramePrefix))
         {
             output.Write(promotedFramePrefix);
         }
         else
         {
-            output.Write(data, 0, appendSiteData ? data.Length : siteDataOffset);
+            output.Write(data, 0, siteDataOffset);
         }
 
         if (hasClassInfoCount)
@@ -1398,40 +1423,24 @@ internal static class ObjectStreamRoundTripRewriter
         MsFormsFactoryBinary.WriteUInt32(output, checked((uint)additions.Count));
         MsFormsFactoryBinary.WriteUInt32(output, checked((uint)payload.Length));
         output.Write(payload.ToArray());
-        if (appendPageTail)
-        {
-            output.Write(BuildDefaultPageTail());
-        }
+        output.Write(FormDesignExDataBinary.ResolveForGeneration(
+            formBooleanProperties,
+            existingDesignExData,
+            ownerContainer?.Type.Equals("MultiPage", StringComparison.OrdinalIgnoreCase) == true
+                ? FormDesignExDefaultKind.MultiPage
+                : ownerContainer is null
+                    ? FormDesignExDefaultKind.UserForm
+                    : FormDesignExDefaultKind.Container,
+            ownerContainer?.Name ?? "UserForm"));
 
         var rebuilt = output.ToArray();
         PatchNextAvailableId(rebuilt, additions.Select(addition => addition.Control));
         return rebuilt;
     }
 
-    private static bool IsEmptyGeneratedPageFormStream(byte[] data, int siteDataOffset, uint countOfSites, uint countOfBytes)
-    {
-        if (countOfSites != 0 || countOfBytes != 0 || data.Length != siteDataOffset + 8)
-        {
-            return false;
-        }
-
-        if (data.Length < 12 || data[0] != 0 || data[1] != 4)
-        {
-            return false;
-        }
-
-        var propMask = BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(4, 4));
-        return propMask == 0x0C00_0C48;
-    }
-
-    private static byte[] BuildDefaultPageTail() =>
-        // Native Pages with child controls persist this 16-byte PageControl tail after
-        // FormSiteData. Without it, the page parses internally but the native designer
-        // opens the MultiPage tab as visually empty.
-        Convert.FromHexString("00020C0019000000F3FF0100FF010000");
-
     private static bool TryPromoteEmptyFrameFormControl(
         byte[] data,
+        int prefixEnd,
         IEnumerable<ControlInfo> additions,
         out byte[] promotedPrefix)
     {
@@ -1463,8 +1472,7 @@ internal static class ObjectStreamRoundTripRewriter
             return false;
         }
 
-        var copyEnd = TrimTrailingZeroFontPadding(data);
-        if (copyEnd < formEnd)
+        if (prefixEnd < formEnd || prefixEnd > data.Length)
         {
             return false;
         }
@@ -1485,20 +1493,9 @@ internal static class ObjectStreamRoundTripRewriter
         MsFormsFactoryBinary.WriteUInt32(output, checked((uint)Math.Max(nextAvailableId, 1)));
         output.Write(data, 8, drawBufferOffset - 8);
         MsFormsFactoryBinary.WriteUInt32(output, 1);
-        output.Write(data, drawBufferOffset, copyEnd - drawBufferOffset);
+        output.Write(data, drawBufferOffset, prefixEnd - drawBufferOffset);
         promotedPrefix = output.ToArray();
         return true;
-    }
-
-    private static int TrimTrailingZeroFontPadding(byte[] data)
-    {
-        // Native empty Frame streams persist eight trailing zero bytes after the default
-        // StdFont stream. Once the first child is added, the designer writes FormSiteData
-        // immediately after the font name instead; leaving those zero bytes makes native
-        // importers read CountOfSites as zero and the Frame opens visually empty.
-        return data.Length >= 8 && data.AsSpan(data.Length - 8, 8).SequenceEqual(stackalloc byte[8])
-            ? data.Length - 8
-            : data.Length;
     }
 
     private static bool TryFindFrameDrawBufferLocalOffset(byte[] formStream, out int offset)
@@ -3098,6 +3095,51 @@ internal static class ObjectStreamRoundTripRewriter
         {
             WriteInt32ByFileOffset(formStream, output, scrollTopOffset, scrollTop, "scrollTop");
         }
+    }
+
+    private static byte[] SynchronizeFormDesignExData(
+        StorageEntryDump sourceStream,
+        byte[] data,
+        Dictionary<string, object?> targetProperties,
+        FormDesignExDefaultKind defaultKind,
+        string owner)
+    {
+        var localStream = sourceStream with
+        {
+            Data = data,
+            Size = (ulong)data.Length,
+            FileOffsets = Enumerable.Range(0, data.Length).ToArray()
+        };
+        if (!FormControlParser.TryRead(localStream, out var formControl))
+        {
+            throw new CliException($"Cannot synchronize FormDesignExData for '{owner}': FormControl parsing failed.");
+        }
+
+        StructuredMsFormsParser.Parse(localStream, ParserMode.Tolerant, formControl);
+        var structureEnd = formControl.Properties.TryGetValue("formSiteDataEndLocalOffset", out var endValue) &&
+                           endValue is int siteDataEnd
+            ? siteDataEnd
+            : formControl.FormStreamDataEndLocalOffset;
+        if (structureEnd < 0 || structureEnd > data.Length)
+        {
+            throw new CliException($"Cannot synchronize FormDesignExData for '{owner}': invalid FormSiteData boundary.");
+        }
+
+        var formBooleanProperties = MsFormsFactoryBinary.GetUInt32(targetProperties, "formBooleanProperties")
+                                    ?? MsFormsFactoryBinary.GetUInt32(formControl.Properties, "formBooleanPropertiesRaw")
+                                    ?? 0u;
+        object? requested = null;
+        if ((formBooleanProperties & FormDesignExDataBinary.PersistedFlag) != 0)
+        {
+            targetProperties.TryGetValue("formDesignExData", out requested);
+        }
+
+        var designExData = FormDesignExDataBinary.ResolveForGeneration(
+            formBooleanProperties,
+            requested,
+            defaultKind,
+            owner);
+        return [.. data.AsSpan(0, structureEnd).ToArray(), .. designExData];
     }
 
     private static void WriteUInt32ByFileOffset(StorageEntryDump stream, byte[] output, int fileOffset, uint value, string context)

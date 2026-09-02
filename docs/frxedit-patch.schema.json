@@ -375,6 +375,11 @@
             }
           ]
         },
+        "formDesignExData": {
+          "type": "string",
+          "pattern": "^base64:.+$",
+          "description": "Lossless FormDesignExData for generated UserForm, Frame, MultiPage, and Page controls. Recreation templates only. Requires FORM_FLAG_DESINKPERSISTED (0x00004000) in formBooleanProperties."
+        },
         "whatsThisButton": {
           "type": "boolean"
         },

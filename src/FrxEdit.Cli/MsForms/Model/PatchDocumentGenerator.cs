@@ -26,7 +26,7 @@ internal static class PatchDocumentGenerator
         "min", "max", "position", "smallChange", "largeChange", "orientation", "delay", "proportionalThumb",
         "logicalWidth", "logicalHeight", "scrollLeft", "scrollTop",
         "logicalWidthPt", "logicalHeightPt", "scrollLeftPt", "scrollTopPt",
-        "formBooleanProperties", "formDrawBuffer",
+        "formBooleanProperties", "formDrawBuffer", "formDesignExData",
         "tabCaptions", "tabTooltips", "tabNames", "tabTags", "tabAccelerators", "tabFlags", "style"
     ];
 
@@ -38,13 +38,14 @@ internal static class PatchDocumentGenerator
         "displayedWidthPt", "displayedHeightPt", "logicalWidth", "logicalHeight", "logicalWidthPt",
         "logicalHeightPt", "scrollLeft", "scrollTop", "scrollLeftPt", "scrollTopPt", "formBooleanProperties",
         "StartUpPosition", "ShowModal", "Tag", "Left", "Top", "Width", "Height", "ClientLeft", "ClientTop", "ClientWidth", "ClientHeight",
-        "Caption", "formDrawBuffer", "DrawBuffer", "WhatsThisButton", "WhatsThisHelp"
+        "Caption", "formDrawBuffer", "formDesignExData", "DrawBuffer", "WhatsThisButton", "WhatsThisHelp"
     };
 
     private static string CanonicalizeRootFormPropertyName(string name)
     {
         if (name.Equals("formCaption", StringComparison.OrdinalIgnoreCase)) return "formCaption";
         if (name.Equals("formDrawBuffer", StringComparison.OrdinalIgnoreCase)) return "formDrawBuffer";
+        if (name.Equals("formDesignExData", StringComparison.OrdinalIgnoreCase)) return "formDesignExData";
         if (name.Equals("formGroupCount", StringComparison.OrdinalIgnoreCase)) return "formGroupCount";
         if (name.StartsWith("form", StringComparison.OrdinalIgnoreCase))
         {
@@ -101,6 +102,16 @@ internal static class PatchDocumentGenerator
                 }
                 if (RootFormPropertyNames.Contains(kvp.Key))
                 {
+                    if (kvp.Key.Equals("formDesignExData", StringComparison.OrdinalIgnoreCase) && !asTemplate)
+                    {
+                        semanticAudit?.RecordTemplateDecision(
+                            "form", formName, "UserForm", null, "Root Entry", kvp.Key,
+                            true, kvp.Value, false, null, null,
+                            "intentional generated-only exclusion",
+                            "FormDesignExData is exported only by recreation templates");
+                        continue;
+                    }
+
                     if (kvp.Key.Equals("formBooleanProperties", StringComparison.OrdinalIgnoreCase) && kvp.Value is string hex && hex.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
                     {
                         var bits = Convert.ToUInt32(hex[2..], 16);
@@ -153,7 +164,8 @@ internal static class PatchDocumentGenerator
         }
         foreach (var propertyName in formProps.Keys)
         {
-            if (!RebuildPatchApplier.SupportsExportedRootProperty(propertyName))
+            if (!RebuildPatchApplier.SupportsExportedRootProperty(propertyName) &&
+                !(asTemplate && RebuildPatchApplier.SupportsGeneratedRootProperty(propertyName)))
             {
                 throw new InvalidOperationException($"Exporter contract violation: root property '{propertyName}' has no Writer consumer.");
             }
@@ -784,7 +796,7 @@ internal static class PatchDocumentGenerator
             "pictureposition" or "picture" or "mouseicon" or "picturesizemode" or "picturealignment" or "picturetiling" or
             "accelerator" or "alignment" or "paragraphalign" or "controltiptext" or "tabindex" or "tabstop" or "visible" or
             "min" or "max" or "position" or "smallchange" or "largechange" or "orientation" or "delay" or "proportionalthumb" or
-            "formbooleanproperties" or "formdrawbuffer" or "keepscrollbarsvisible" or "righttoleft" or
+            "formbooleanproperties" or "formdrawbuffer" or "formdesignexdata" or "keepscrollbarsvisible" or "righttoleft" or
             "tabcaptions" or "tabtooltips" or "tabnames" or "tabtags" or "tabaccelerators" or "tabflags" or "style" or
             "scrollleft" or "scrolltop" or "logicalwidth" or "logicalheight" or
             "scrollleftpt" or "scrolltoppt" or "logicalwidthpt" or "logicalheightpt" or
