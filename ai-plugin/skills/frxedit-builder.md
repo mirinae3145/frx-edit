@@ -41,7 +41,8 @@ Keep the JSON, its `.vba` sidecar, and its form-named asset directory together.
 1. Make the smallest requested change. Preserve fields you do not understand rather than replacing an entry from memory.
 1. Update the `.vba` sidecar when renamed, removed, or added controls affect procedures or references.
 1. Rebuild to a separate pair.
-1. Strictly inspect or validate the rebuilt pair and review the semantic report when requested.
+1. Confirm that the rebuilt `.frm` references the generated `.frx` through its `OleObjectBlob` line.
+1. Strictly inspect or validate the rebuilt pair. For a failed or questionable rebuild, generate both human and raw inspection output and review the rebuild report. Require `semanticMatch: true` when the report defines an expected supported-semantic result.
 1. Tell the user that native Office/VBE checks remain necessary for compilation and runtime behavior.
 
 Recommended build:
@@ -161,6 +162,13 @@ Rename and remove controls:
 
 Names must be valid VBA identifiers and unique after all operations. Update VBA event procedures and references when a control is renamed or removed.
 
+When adding a control, choose a stable, descriptive VBA-compatible name suitable for event procedures and code references. Parent controls according to the supported graph:
+
+- An omitted or `null` parent means the root UserForm.
+- Ordinary controls may be parented to the root, a `Frame`, or a `Page`.
+- A `Page` may only be parented to a `MultiPage`.
+- Do not parent an ordinary control directly to a `MultiPage`; parent it to one of that MultiPage's Pages.
+
 ## Controls and property boundaries
 
 Supported control types are CommandButton, Label, TextBox, ComboBox, ListBox, CheckBox, OptionButton, ToggleButton, Image, ScrollBar, SpinButton, TabStrip, Frame, MultiPage, and Page.
@@ -242,6 +250,8 @@ Without `--out`, watch replaces the source pair and creates `.bak` files when ou
 - Structural operations do not conflict.
 - The `.vba` sidecar matches renamed, removed, and added controls.
 - Every `file://` asset exists relative to the JSON.
+- The rebuilt `.frm` names the generated `.frx` in its `OleObjectBlob` line.
 - Build output uses a separate `.frm`/`.frx` pair unless in-place output was explicitly requested.
 - The rebuilt form passes strict inspection/validation.
+- Any applicable rebuild report has `semanticMatch: true`.
 - The user is told what native Office/VBE validation remains.

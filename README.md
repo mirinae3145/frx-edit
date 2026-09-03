@@ -1,6 +1,5 @@
 # FrxEdit
 
-[![Build and Release](https://github.com/mirinae3145/frx-edit/actions/workflows/build.yml/badge.svg?branch=dev-canonical)](https://github.com/mirinae3145/frx-edit/actions/workflows/build.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 FrxEdit is a .NET command-line tool for inspecting, exporting, patching, and reconstructing VBA UserForms represented by paired `.frm` and `.frx` files. It exposes the supported MSForms state as JSON, keeps VBA in an editable sidecar, and can extract embedded picture data into ordinary files.

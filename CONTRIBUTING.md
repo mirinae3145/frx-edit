@@ -135,6 +135,8 @@ The focused executable should contain small deterministic regressions for byte b
 
 Suites retain diagnostics under `.build` by default. Use `-ArtifactsRoot` to isolate a run. `-SkipWatch` is diagnostic only; a normal acceptance run includes watch behavior.
 
+When a change affects creation, container topology, examples, or the public editing instructions, an additional clean-room smoke test can expose assumptions hidden by an existing source form. Create a form from zero with a nested Frame and a MultiPage containing explicit Pages and child controls, then run strict validation and both human and raw inspection. Prefer converting a recurring failure into a deterministic automated regression instead of retaining a one-off prompt as the test definition.
+
 Also run focused commands for the behavior being documented. Useful examples include:
 
 ```powershell
@@ -143,6 +145,16 @@ frxedit validate test_data/forms/original/userformallcontrol.frm --mode strict
 ```
 
 If a change affects Office-facing behavior, record which application/version was tested and what was checked: import, compilation, layout, focus, events, interaction, and save/reopen. Do not turn the absence of a native environment into an automated-pass claim.
+
+If strict validation succeeds but a native host rejects the generated form, preserve the failing pair and diagnose the representation boundary before changing generator defaults:
+
+- Confirm that the output `.frm` `OleObjectBlob` line names the generated `.frx`.
+- Generate strict human and raw inspection output and review the rebuild report; require `semanticMatch: true` wherever the report defines an expected supported-semantic result.
+- Check FormSiteData parent, depth, type, and site-order relationships against the reconstructed graph.
+- Check owned storage paths and the coordinated `f`, `o`, and `x` stream sizes and object-payload ordering.
+- For MultiPage/Page failures, inspect the internal TabStrip state and each Page's companion `x` stream metadata.
+
+Use `dump-storage` and `dump-stream-records` to collect structural evidence. Native rejection is not, by itself, evidence that an unrelated parser or Writer invariant should be weakened.
 
 ## Review checklist
 
