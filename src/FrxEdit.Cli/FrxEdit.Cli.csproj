@@ -9,9 +9,9 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Content Include="..\..\ai-plugin\**">
+    <Content Include="..\..\skills\**">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-      <Link>ai-plugin\%(RecursiveDir)%(Filename)%(Extension)</Link>
+      <Link>skills\%(RecursiveDir)%(Filename)%(Extension)</Link>
     </Content>
   </ItemGroup>
 

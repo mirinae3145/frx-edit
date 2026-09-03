@@ -1,6 +1,6 @@
 # Contributing to FrxEdit
 
-This guide is for humans and AI agents changing FrxEdit itself. If the task is to edit JSON, VBA, or assets exported by FrxEdit, use the [packaged AI editing guide](ai-plugin/skills/frxedit-builder.md) instead.
+This guide is for humans and AI agents changing FrxEdit itself. If the task is to edit JSON, VBA, or assets exported by FrxEdit, use the [packaged AI editing guide](skills/edit-frx/SKILL.md) instead.
 
 FrxEdit modifies a binary format with several representations of the same form. Treat parser, model, Writer, schema, documentation, and regression behavior as one contract.
 
@@ -25,7 +25,7 @@ The CLI project targets `net8.0`. Build and test on the platforms affected by a 
 | `test_data` | Repository-owned form pair and generated-container template |
 | `scripts` | Canonical comparison and end-to-end reconstruction suites |
 | `docs` | Architecture, supported Writer surface, and patch schema |
-| `ai-plugin` | Instructions packaged with published builds for editing generated artifacts |
+| `skills/edit-frx` | Instructions packaged with published builds for editing generated artifacts |
 | `.github/workflows` | Automated build, test, packaging, and release jobs |
 
 The AI package is copied into CLI publish output by `FrxEdit.Cli.csproj`. Changes to it must remain useful outside the source tree; links and instructions should not assume that an agent can edit FrxEdit source code.

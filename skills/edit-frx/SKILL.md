@@ -1,3 +1,8 @@
+---
+name: edit-frx
+description: Guidance for AI agents editing JSON, VBA sidecars, and assets exported by the FrxEdit CLI.
+---
+
 # Editing FrxEdit-generated UserForm artifacts
 
 Use this guide when the user asks you to edit JSON, a `.vba` sidecar, or an asset set exported by FrxEdit. It does not authorize changes to FrxEdit source code, tests, release configuration, or binary fixtures. Repository development follows `CONTRIBUTING.md` when that file is available.

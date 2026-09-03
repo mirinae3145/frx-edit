@@ -293,7 +293,7 @@ Forms obtained from the external IguanaTex project have also been used to verify
 - [Patch JSON Schema](docs/frxedit-patch.schema.json)
 - [Architecture and binary format](docs/architecture.md)
 - [Contributor guide](CONTRIBUTING.md)
-- [Packaged AI editing guide](ai-plugin/skills/frxedit-builder.md)
+- [Packaged AI editing guide](skills/edit-frx/SKILL.md)
 
 ## AI use disclosure
 

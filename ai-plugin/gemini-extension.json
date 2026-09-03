@@ -1,8 +1,0 @@
-{
-  "name": "frxedit-ai-skill",
-  "description": "Guidance for AI agents editing JSON, VBA sidecars, and assets exported by the FrxEdit CLI.",
-  "version": "1.1.0",
-  "author": {
-    "name": "FrxEdit contributors"
-  }
-}
