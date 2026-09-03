@@ -1,146 +1,247 @@
-# Skill: FrxEdit VBA UserForm Builder (Advanced Agentic Reference)
+# Editing FrxEdit-generated UserForm artifacts
 
-You are equipped to autonomously create, design, and modify MS-Forms (`.frx` / `.frm`) UserForms without needing the VBA IDE. You interact with the Visual Basic application entirely through JSON structure files using the custom `frxedit` compiler built for this project.
+Use this guide when the user asks you to edit JSON, a `.vba` sidecar, or an asset set exported by FrxEdit. It does not authorize changes to FrxEdit source code, tests, release configuration, or binary fixtures. Repository development follows `CONTRIBUTING.md` when that file is available.
 
-## 1. Core Workflow & CLI Commands
+FrxEdit operates on paired VBA UserForm `.frm` and `.frx` files. JSON is a supported edit interface for a documented subset of MSForms; it is not a complete replacement for the native VBA editor.
 
-**Never modify binary files (`.frx`) or complex positional logic in `.frm` directly.** Always interact via JSON patching using the following lifecycle:
+## Safety boundary
 
-| Action | Command | Purpose |
-| :--- | :--- | :--- |
-| **Inspect** | `frxedit inspect UserForm1.frm --as-patch --out layout.json` | Extracts the GUI layout into a flat JSON dictionary. `--as-patch` ignores default properties to keep the JSON concise for editing. |
-| **Template** | `frxedit inspect UserForm1.frm --as-template --out template.json` | Extracts the full layout (including structure) for cloning or transferring to a new form. |
-| **Build** | `frxedit build UserForm1.frm --patch layout.json --out UserForm1.frm` | Regenerates the OLE/CFB `.frx` container and `.frm` code-behind, merging your JSON layout changes back in. |
-| **Watch** | `frxedit watch UserForm1.frm` | Runs continuously. Rebuilds the binary automatically in <250ms whenever the JSON patch, VBA code, or image assets change. |
+- Do not modify `.frx` bytes directly.
+- Keep the input `.frm` beside the `.frx` named by its `OleObjectBlob` line.
+- Preserve the original pair or ensure it is recoverable before rebuilding.
+- Prefer strict inspection and a separate output path.
+- Treat generated JSON, VBA, and assets as untrusted input until the CLI accepts them and the rebuilt form is checked in its intended Office host.
+- Do not claim that a successful rebuild proves VBA compilation, visual fidelity, event behavior, or save/reopen compatibility.
 
-## 2. Control Operations (DOM Manipulation)
+When strict inspection rejects the source, report the error. Use tolerant mode for diagnosis only unless the user explicitly accepts a tolerant reconstruction risk.
 
-The extracted `layout.json` has a standard flat dictionary structure. The system uses a declarative `$action` meta-property to manage the component lifecycle:
+## Artifact set
+
+Given this command:
+
+```powershell
+frxedit inspect UserForm1.frm --mode strict --as-patch `
+  --out edits/UserForm1.patch.json
+```
+
+FrxEdit may produce:
+
+- `edits/UserForm1.patch.json`: editable layout and supported properties;
+- `edits/UserForm1.patch.vba`: editable VBA body; and
+- `edits/UserForm1/`: extracted picture and mouse-icon files when the form has supported embedded assets.
+
+`--as-template` additionally exports the `add` list and generated-only data used to recreate the supported graph. File-based patch/template export extracts embedded assets automatically. `--extract-images` is only a compatibility flag. Output sent to standard output retains `base64:` assets inline.
+
+Keep the JSON, its `.vba` sidecar, and its form-named asset directory together.
+
+## Editing workflow
+
+1. Inspect the form in strict mode and export a patch or template if the user has not supplied one.
+1. Read the entire JSON and identify the root form name, control names, types, parents, and existing generated fields.
+1. Make the smallest requested change. Preserve fields you do not understand rather than replacing an entry from memory.
+1. Update the `.vba` sidecar when renamed, removed, or added controls affect procedures or references.
+1. Rebuild to a separate pair.
+1. Strictly inspect or validate the rebuilt pair and review the semantic report when requested.
+1. Tell the user that native Office/VBE checks remain necessary for compilation and runtime behavior.
+
+Recommended build:
+
+```powershell
+frxedit build UserForm1.frm edits/UserForm1.patch.json `
+  --out preview/UserForm1.frm --mode strict
+
+frxedit validate preview/UserForm1.frm --mode strict
+```
+
+`build` already defaults to strict mode and full-patch reconstruction; the explicit mode above makes the acceptance condition visible.
+
+## Generated JSON representation
+
+An exported patch normally resembles this:
+
 ```json
 {
   "properties": {
-    "UserForm1": { "widthPt": 300, "heightPt": 400 },
-    "CommandButton1": { 
-      "$action": "edit", 
-      "$newName": "", 
-      "leftPt": 10, 
-      "topPt": 10, 
-      "widthPt": 100, 
-      "heightPt": 25 
+    "UserForm1": {
+      "caption": "Example"
+    },
+    "CommandButton1": {
+      "$action": "edit",
+      "$newName": "",
+      "type": "CommandButton",
+      "leftPt": 18,
+      "topPt": 120,
+      "widthPt": 72,
+      "heightPt": 24,
+      "caption": "OK"
     }
   }
 }
 ```
 
-*   **Editing a Control:** This is the default. Properties are updated in place. If a control is omitted from the JSON, it is simply ignored and remains unchanged in the binary.
-*   **Adding a Control:** Add a new key to the `properties` dictionary and explicitly set `"$action": "add"`. You **must** also provide the `"type"` (e.g., `"CommandButton"`) and the bounds: `leftPt`, `topPt`, `widthPt`, and `heightPt`.
-*   **Removing a Control:** To delete a control from the binary, you **MUST NOT** simply delete the key from the JSON. Instead, set its `$action` property to `"remove"` (e.g., `"CommandButton1": { "$action": "remove" }`).
-*   **Renaming a Control:** Do not change the dictionary key. Keep the original key name and set `"$action": "rename"` along with `"$newName": "YourNewName"`. In the next WYSIWYG sync, the dictionary key will be updated to the new name.
-*   **VBA Event Handlers:** When adding, removing, or renaming controls, ensure you also update any associated VBA event handlers (e.g., `Private Sub TextBox2_Click()`) in the `.frm` text file to prevent compilation errors in Excel.
+For an ordinary property or geometry request, edit the existing exported value in place. Do not add a second conflicting value in a top-level section.
 
-## 3. Data Types & Semantic Values
+The canonical top-level sections accepted by FrxEdit are:
 
-| Type | Format & Valid Values | Description |
-| :--- | :--- | :--- |
-| **Pt (Point)** | Decimal (e.g., `120.5`, `34`) | Used for ALL spatial metrics (`leftPt`, `widthPt`, `fontSize`). *Never use logical or twip units.* |
-| **Color** | Hex: `"#RRGGBB"`<br>System: `"systemButtonFace"`, `"systemWindow"`, `"systemWindowText"`, `"systemHighlight"` | The compiler translates these to/from MS-Forms integer masks automatically. |
-| **Boolean** | `true` or `false` | Standard JSON booleans. |
-| **String** | Text (e.g., `"Submit"`) | Text values for captions, names, tags. |
-| **Image Path** | Relative path: `"images/logo.jpg"` | Used for the `picture` or `mouseIcon` properties. The compiler handles the base64 binary encoding. |
+| Section | Purpose |
+| --- | --- |
+| `properties` | Root and control values keyed by name |
+| `layout` | Geometry keyed by control name |
+| `renames` | Old name to new name |
+| `move` | Control name to new parent; `null` or an empty parent means the root |
+| `remove` | Names of existing controls to remove |
+| `add` | New controls, parents, geometry, and optional properties |
+| `code.tabStripPanels` | Optional generated VBA for TabStrip-controlled Frame panels |
 
-## 4. Universal Container Properties
+The `$action` fields in exported entries are a supported compatibility interface:
 
-These properties apply to **UserForm** and **Frame** controls.
-*(Note: For the UserForm root, properties are prefixed with `form`, e.g., `formCaption`, `formBackColor`, `formBorderStyle`).*
+- `edit` keeps the entry as an existing-control edit.
+- `remove` converts the control to `remove` and discards other values in that entry.
+- `rename` requires a non-empty `$newName`.
+- `add` requires a valid `type`; include `parent` and point geometry when applicable.
 
-| Property | Type | Values/Enums |
-| :--- | :--- | :--- |
-| `caption` | String | Window/Frame title. |
-| `backColor`, `foreColor`, `borderColor` | Color | Standard color types. |
-| `borderStyle` | Integer | `0` (None), `1` (Single). |
-| `specialEffect` | Integer | `0` (Flat), `1` (Raised), `2` (Sunken), `3` (Etched), `4` (Bump). |
-| `scrollBars` | Integer | `0` (None), `1` (Horiz), `2` (Vert), `3` (Both). |
-| `mousePointer` | Integer | `0` (Default), `1` (Arrow), `3` (IBeam), `11` (Hourglass), `99` (Custom). |
-| `pictureSizeMode` | Integer | `0` (Clip), `1` (Stretch), `3` (Zoom). |
-| `pictureAlignment` | Integer | `0` (TopLeft), `1` (TopRight), `2` (Center), `3` (BottomLeft), `4` (BottomRight). |
-| `picture` | Img Path | Path to the background image. |
+For a top-level `remove`, delete the same name from `properties` and `layout`; a control cannot be removed and explicitly edited in the same patch. A top-level rename may continue to use the old key for source-targeted properties or the new name where the validator permits a renamed target. Avoid combining compatibility actions with duplicate canonical operations.
 
-## 5. Standard Control Properties Catalog
+## Canonical edit examples
 
-**All visible controls REQUIRE:** `leftPt`, `topPt`, `widthPt`, `heightPt`.
-**All interactable controls SUPPORT:** `enabled` (Bool), `locked` (Bool), `visible` (Bool), `tabIndex` (Int), `tabStop` (Bool), `tag` (String), `controlTipText` (String), `controlSource` (String).
-**Typography Supported by ALL text controls:** `fontName` (String), `fontSize` (Pt), `fontWeight` (Int: `400`=Normal, `700`=Bold), `fontItalic` (Bool), `fontUnderline` (Bool), `fontStrikethrough` (Bool).
+Move and resize an existing control:
 
-### CommandButton
-| Property | Type | Description / Enums |
-| :--- | :--- | :--- |
-| `caption` | String | Button text. |
-| `backColor`, `foreColor` | Color | Background and text color. |
-| `wordWrap`, `autoSize` | Bool | Text wrapping and auto-resizing. |
-| `default`, `cancel` | Bool | Triggered by ENTER (`default`) or ESC (`cancel`). |
-| `picturePosition` | Integer | `0` (LeftTop) to `12` (RightBottom). |
-| `accelerator` | String | Shortcut key (single char). |
+```json
+{
+  "layout": {
+    "CommandButton1": {
+      "leftPt": 18,
+      "topPt": 144,
+      "widthPt": 84,
+      "heightPt": 24
+    }
+  },
+  "properties": {
+    "CommandButton1": {
+      "caption": "Save",
+      "fontBold": true
+    }
+  }
+}
+```
 
-### Label
-| Property | Type | Description / Enums |
-| :--- | :--- | :--- |
-| `caption` | String | Label text. |
-| `backColor`, `foreColor`, `borderColor` | Color | Visual colors. |
-| `borderStyle`, `specialEffect`, `backStyle` | Integer | `backStyle`: `0` (Transparent), `1` (Opaque). |
-| `wordWrap`, `autoSize` | Bool | Layout handling. |
-| `textAlign` | Integer | `1` (Left), `2` (Center), `3` (Right). |
+Add a nested Label:
 
-### TextBox
-| Property | Type | Description / Enums |
-| :--- | :--- | :--- |
-| `value` / `text` | String | Initial text content. |
-| `backColor`, `foreColor`, `borderColor` | Color | Visual colors. |
-| `borderStyle`, `specialEffect`, `backStyle` | Integer | Standard visual enumerations. |
-| `multiLine`, `wordWrap`, `autoSize` | Bool | Support for multi-line text blocks. |
-| `scrollBars` | Integer | `0` (None), `1` (Horiz), `2` (Vert), `3` (Both). |
-| `maxLength` | Integer | Char limit (`0` = unlimited). |
-| `passwordChar` | String | Char to mask input (e.g., `*`). |
-| `textAlign` | Integer | `1` (Left), `2` (Center), `3` (Right). |
-| `enterKeyBehavior` | Bool | `true`: ENTER creates new line (requires multiLine). |
+```json
+{
+  "add": [
+    {
+      "type": "Label",
+      "name": "StatusLabel",
+      "parent": "FooterFrame",
+      "leftPt": 8,
+      "topPt": 8,
+      "widthPt": 100,
+      "heightPt": 18,
+      "properties": {
+        "caption": "Ready"
+      }
+    }
+  ]
+}
+```
 
-### CheckBox / OptionButton / ToggleButton
-| Property | Type | Description / Enums |
-| :--- | :--- | :--- |
-| `value` | String | `"0"` (Unchecked), `"1"` (Checked), `"2"` (Mixed). |
-| `caption` | String | Text description. |
-| `groupName` | String | (OptionButton only) Groups radio buttons logically. |
-| `backColor`, `foreColor` | Color | Visual colors. |
-| `wordWrap`, `autoSize` | Bool | Layout handling. |
-| `alignment` | Integer | Checkbox placement relative to text: `0` (Left), `1` (Right). |
+Rename and remove controls:
 
-### ComboBox / ListBox
-| Property | Type | Description / Enums |
-| :--- | :--- | :--- |
-| `value` / `text` | String | Selected value. |
-| `rowSource` | String | Excel range linking (e.g., `"Sheet1!A1:A10"`). |
-| `columnCount`, `boundColumn`, `textColumn`| Integer | Column configuration. |
-| `listWidth` | Pt | Width of the dropdown menu. |
-| `listRows` | Integer | (ComboBox only) Items to display before scrolling. |
-| `matchEntry` | Integer | `0` (FirstLetter), `1` (Complete), `2` (None). |
-| `listStyle` | Integer | `0` (Plain), `1` (Option - shows checkboxes). |
-| `multiSelect` | Integer | (ListBox only) `0` (Single), `1` (Multi), `2` (Extended). |
-| `showDropButtonWhen` | Integer | (ComboBox only) `0` (Never), `1` (Focus), `2` (Always). |
+```json
+{
+  "renames": {
+    "CommandButton1": "SaveButton"
+  },
+  "remove": [
+    "ObsoleteLabel"
+  ]
+}
+```
 
-### ScrollBar / SpinButton
-| Property | Type | Description / Enums |
-| :--- | :--- | :--- |
-| `value` / `position` | Integer | Current value. |
-| `min`, `max` | Integer | Value boundaries. |
-| `smallChange`, `largeChange` | Integer | Increment steps (largeChange is ScrollBar only). |
-| `orientation` | Integer | `-1` (Auto), `0` (Vertical), `1` (Horizontal). |
-| `delay` | Integer | Auto-repeat delay in ms. |
-| `proportionalThumb` | Bool | Thumb size reflects view ratio. |
+Names must be valid VBA identifiers and unique after all operations. Update VBA event procedures and references when a control is renamed or removed.
 
-### Image
-| Property | Type | Description / Enums |
-| :--- | :--- | :--- |
-| `picture` | Img Path | Path to local image file. |
-| `pictureSizeMode` | Integer | `0` (Clip), `1` (Stretch), `3` (Zoom). |
-| `pictureAlignment` | Integer | `0` (TopLeft) through `4` (BottomRight). |
-| `backColor`, `borderColor` | Color | Visual colors. |
-| `borderStyle`, `specialEffect`, `backStyle` | Integer | Standard enumerations. |
+## Controls and property boundaries
+
+Supported control types are CommandButton, Label, TextBox, ComboBox, ListBox, CheckBox, OptionButton, ToggleButton, Image, ScrollBar, SpinButton, TabStrip, Frame, MultiPage, and Page.
+
+Properties are type-specific. Never infer that a field emitted for one type is universal. When repository documentation is present, consult `docs/supported-controls.md` and `docs/frxedit-patch.schema.json`. Otherwise, retain the exported fields for each control and make only the requested, well-understood change.
+
+Important boundaries:
+
+- Frame accepts container values plus `caption` and `specialEffect`; an exported template may carry generated-only Frame font data.
+- MultiPage accepts font, container, tab-array, selected-value, and tab-style fields.
+- Page accepts container values and `caption`.
+- TabStrip accepts font and tab-array fields plus `caption`, selected `value`, `style`, and `mouseIcon`.
+- ComboBox and ListBox use `displayStyle`; do not substitute a tab `style` field.
+- `pictureSizeMode` and `pictureAlignment` are Image control properties. The root has similarly named FormControl settings, but they do not create a root picture payload.
+- `largeChange` and `proportionalThumb` are ScrollBar-only; SpinButton does not accept them.
+- Root picture, mouse-icon, and font payloads are preserved when unchanged where supported, but are not editable through the current root Writer.
+- `formDesignExData` is opaque generated/template data. Do not hand-edit it or use it as an in-place root/container property.
+- `streamed`, `promoteControls`, and `formShapeCookie` are diagnostic/structural evidence, not editable properties.
+
+## Value rules
+
+- Point geometry uses JSON numbers in `leftPt`, `topPt`, `widthPt`, and `heightPt`.
+- Raw layout fields and textual root `.frm` measurements are not point aliases. Preserve them unless the requested change specifically targets that domain.
+- `fontSize` is in points, greater than zero, and no greater than 72.
+- `dragBehavior` is integer `0` or `1`, not a JSON boolean.
+- `pictureSizeMode` accepts `0` (clip), `1` (stretch), or `3` (zoom).
+- `specialEffect` uses `0`, `1`, `2`, `3`, or `6`.
+- `mousePointer` uses `0`, `1`, `2`, `3`, `6`–`15`, or `99`; do not use undefined values `4` or `5`.
+- `textAlign` accepts `"left"`, `"center"`, `"right"`, or their integer values `1`, `2`, and `3`.
+- `keepScrollBarsVisible` is a boolean packed-bit projection. It is not the numeric `scrollBars` enum.
+- Preserve exported `picturePosition` integers. The current representation is not limited to the simple `0`–`12` constants.
+- Packed words such as `siteBitFlags`, `fontEffects`, and `formBooleanProperties` accept unsigned numbers, decimal strings, or `0x`-prefixed strings. Prefer changing a named projection so unknown bits remain intact.
+- Colors accept `#RRGGBB`, VBA `&H...&`, supported `system...` names, unsigned JSON integers, or unsigned decimal strings.
+
+Do not erase a property merely because it looks like a default. Absence is normalized only for specific documented file defaults, and a present native value can carry preservation meaning.
+
+## VBA sidecar
+
+The `.vba` sidecar contains the editable code body. FrxEdit combines it with the source-derived form declaration and attributes during reconstruction.
+
+- Preserve `Option` statements, declarations, and unrelated procedures.
+- Rename event procedures and `Me.ControlName` or `Controls("ControlName")` references when their control changes.
+- Remove an event procedure only when the user's request makes it obsolete.
+- Keep source encoding and line endings when the editing environment exposes them.
+- Do not place the binary form declaration or `OleObjectBlob` line in the sidecar.
+
+If `code.tabStripPanels` is used, FrxEdit owns the code between its generated markers. Do not duplicate `UserForm_Initialize` or the relevant TabStrip change procedure outside that block.
+
+## Assets
+
+Use only these forms:
+
+```json
+{
+  "picture": "file://UserForm1/Image1_picture.png",
+  "mouseIcon": "base64:..."
+}
+```
+
+Relative `file://` paths resolve from the JSON file's directory, not from the shell's working directory. Do not replace them with bare paths. Confirm that renamed/moved asset files still match the JSON reference.
+
+Picture editing is supported for CommandButton, Label, TextBox, ComboBox, ListBox, CheckBox, OptionButton, ToggleButton, and Image. Mouse-icon editing additionally includes ScrollBar, SpinButton, and TabStrip. It does not include Frame, MultiPage, Page, or the root.
+
+## Watch mode
+
+Use watch only when the user asks for continuous regeneration:
+
+```powershell
+frxedit watch UserForm1.frm edits/UserForm1.patch.json `
+  --out preview/UserForm1.frm --mode strict
+```
+
+Without `--out`, watch replaces the source pair and creates `.bak` files when outputs already exist. `--wysiwyg` also rewrites the patch and backs it up, so use it only when that normalization is wanted. Watch does not accept or need a `--stream-mode`; it always performs full-patch reconstruction.
+
+## Completion checklist
+
+- The input pair is unchanged or recoverable.
+- JSON remains valid and uses only supported names, types, and values.
+- Structural operations do not conflict.
+- The `.vba` sidecar matches renamed, removed, and added controls.
+- Every `file://` asset exists relative to the JSON.
+- Build output uses a separate `.frm`/`.frx` pair unless in-place output was explicitly requested.
+- The rebuilt form passes strict inspection/validation.
+- The user is told what native Office/VBE validation remains.

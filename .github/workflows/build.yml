@@ -2,10 +2,10 @@ name: Build and Release
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "dev-canonical" ]
     tags: [ "v*.*.*" ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ "main", "dev-canonical" ]
 
 jobs:
   test:
@@ -13,13 +13,6 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
-
-    - name: Checkout IguanaTex canonical corpus
-      uses: actions/checkout@v4
-      with:
-        repository: lee-lab-skku/IguanaTex
-        ref: 7a2b8de
-        path: IguanaTex
 
     - name: Setup .NET
       uses: actions/setup-dotnet@v4
@@ -34,7 +27,7 @@ jobs:
 
     - name: Test canonical round-trip fidelity
       shell: pwsh
-      run: ./scripts/test-canonical-roundtrip.ps1 -Configuration Release -IguanaTexRepo ./IguanaTex -ArtifactsRoot ./.build
+      run: ./scripts/test-canonical-roundtrip.ps1 -Configuration Release -ArtifactsRoot ./.build
 
     - name: Test generated container reconstruction
       shell: pwsh

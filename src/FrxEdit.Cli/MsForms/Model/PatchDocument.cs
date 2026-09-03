@@ -16,6 +16,8 @@ internal sealed class PatchDocument
 
         var keysToRemove = new[] { "type", "parent", "formName", "frxFile", "recordIndex", "name", "$action", "$newName" };
 
+        var removedPropertyKeys = new List<string>();
+
         foreach (var pair in Properties)
         {
             var controlName = pair.Key;
@@ -42,7 +44,9 @@ internal sealed class PatchDocument
             if (action == "remove")
             {
                 Remove ??= new List<string>();
-                if (!Remove.Contains(controlName)) Remove.Add(controlName);
+                if (!Remove.Contains(controlName, StringComparer.OrdinalIgnoreCase)) Remove.Add(controlName);
+                removedPropertyKeys.Add(controlName);
+                continue;
             }
             else if (action == "rename")
             {
@@ -99,6 +103,11 @@ internal sealed class PatchDocument
             {
                 props.Remove(k);
             }
+        }
+
+        foreach (var controlName in removedPropertyKeys)
+        {
+            Properties.Remove(controlName);
         }
     }
 }

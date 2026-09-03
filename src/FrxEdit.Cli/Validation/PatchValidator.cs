@@ -23,6 +23,11 @@
                 throw new CliException($"Remove target '{name}' cannot also receive a layout patch.");
             }
 
+            if (patch.Move?.ContainsKey(name) == true)
+            {
+                throw new CliException($"Remove target '{name}' cannot also be moved.");
+            }
+
             if (patch.Properties?.ContainsKey(name) == true)
             {
                 throw new CliException($"Remove target '{name}' cannot also receive a properties patch.");

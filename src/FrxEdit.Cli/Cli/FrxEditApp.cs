@@ -946,32 +946,39 @@ internal sealed class FrxEditApp(TextWriter stdout, TextWriter stderr)
 
     private void PrintHelp()
     {
-        stdout.WriteLine("=================================================");
-        stdout.WriteLine(" FrxEdit CLI - MS Forms Reverse Engineering Tool ");
-        stdout.WriteLine("=================================================\n");
+        stdout.WriteLine("FrxEdit CLI - inspect and reconstruct Microsoft Forms\n");
 
-        stdout.WriteLine("--- CORE COMMANDS ---");
-        
+        stdout.WriteLine("CORE COMMANDS");
+
         stdout.WriteLine("frxedit inspect <UserForm.frm> [--mode tolerant|strict|legacy] [--out layout.json]");
         stdout.WriteLine("frxedit inspect <UserForm.frm> --as-patch --out layout.patch.json");
         stdout.WriteLine("frxedit inspect <UserForm.frm> --as-template --out layout.template.json");
-        stdout.WriteLine("  --as-patch        Exports properties only for in-place modifications (default: extracts images to subfolder).");
-        stdout.WriteLine("  --as-template     Exports both properties and structural layout to clone the form from scratch.");
-        stdout.WriteLine("  --extract-images  Extracts base64 picture/mouseIcon to separate binary files and uses file:// references.\n");
+        stdout.WriteLine("  Default inspection mode: tolerant. Use strict for acceptance checks.");
+        stdout.WriteLine("  --as-patch        Exports an editable patch for an existing form.");
+        stdout.WriteLine("  --as-template     Also exports the add list needed to recreate the supported graph.");
+        stdout.WriteLine("  Patch/template --out also writes a matching .vba sidecar. Embedded assets are");
+        stdout.WriteLine("  extracted to a form-named subdirectory and replaced with file:// references.");
+        stdout.WriteLine("  --extract-images remains accepted for compatibility; extraction with --out is automatic.\n");
 
-        stdout.WriteLine("frxedit watch <UserForm.frm> [<patch.json>] [--out <UserForm.patched.frm>]");
-        stdout.WriteLine("  Automatically rebuilds the UserForm when the JSON, VBA, or image assets change.\n");
-
-        stdout.WriteLine("frxedit build <UserForm.frm> [<patch.json>] --out <UserForm.rebuilt.frm> [--mode strict] [--stream-mode full-patch] [--writer-audit-out audit.json]");
-        stdout.WriteLine("  Regenerates the OLE/CFB container. Merges patch structural changes, code and properties seamlessly.\n");
+        stdout.WriteLine("frxedit build <UserForm.frm> [<patch.json>] --out <UserForm.rebuilt.frm> [--mode strict] [--stream-mode full-patch] [--report-out report.json] [--writer-audit-out audit.json]");
+        stdout.WriteLine("  --patch <patch.json> is equivalent to the optional positional patch.");
+        stdout.WriteLine("  Defaults: strict parser mode and full-patch stream mode.");
+        stdout.WriteLine("  --report-out writes the semantic rebuild comparison.");
+        stdout.WriteLine("  --writer-audit-out writes a J/N/T/B/C reconstruction provenance report.");
+        stdout.WriteLine("  Rebuilds the paired .frm/.frx output and then rereads it for validation.\n");
 
         stdout.WriteLine("frxedit create <UserFormNew.frm> --name UserFormNew [--caption Demo] [--widthPt 340] [--heightPt 240] [--patch form.patch.json] [--writer-audit-out audit.json]\n");
 
-        stdout.WriteLine("--- DIAGNOSTIC & DEBUG COMMANDS ---");
+        stdout.WriteLine("frxedit watch <UserForm.frm> [<patch.json>] [--out <UserForm.patched.frm>] [--mode tolerant|strict|legacy] [--wysiwyg]");
+        stdout.WriteLine("  Defaults to <UserForm.json>, tolerant mode, full-patch rebuilding, and in-place output.");
+        stdout.WriteLine("  Existing outputs receive .bak files. --out keeps the source pair separate.");
+        stdout.WriteLine("  --wysiwyg rewrites the patch after a successful rebuild and backs up the patch first.");
+        stdout.WriteLine("  Watches the patch, its .vba sidecar, and supported image assets. Stop with Ctrl+C.\n");
+
+        stdout.WriteLine("DIAGNOSTIC COMMANDS");
         stdout.WriteLine("frxedit inspect <UserForm.frm> --out layout.json --raw-out layout.raw.json");
-        stdout.WriteLine("  --raw-out         Dumps raw property identifiers and streams for deep diagnostic analysis.\n");
-        stdout.WriteLine("  --writer-audit-out  Writes an opt-in J/N/T/B/C reconstruction provenance audit as JSON.\n");
-        stdout.WriteLine("  --reader-audit-out       Writes an opt-in P/R/J semantic provenance audit as JSON without changing normal outputs.\n");
+        stdout.WriteLine("  --raw-out             Writes parser and native-structure diagnostics.");
+        stdout.WriteLine("  --reader-audit-out    Writes a P/R/J semantic provenance report.\n");
 
         stdout.WriteLine("frxedit validate <UserForm.frm> [--mode tolerant|strict|legacy]");
         stdout.WriteLine("frxedit dump-records <UserForm.frm> [--around TextBox3] [--before 4] [--after 8] [--out records.json]");

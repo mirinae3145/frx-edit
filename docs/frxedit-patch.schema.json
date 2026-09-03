@@ -205,6 +205,35 @@
       "type": "object",
       "description": "Shared property-value envelope. A field being defined here does not make it valid for every control type; FrxEdit rejects known incompatible combinations after resolving the target type.",
       "additionalProperties": true,
+      "allOf": [
+        {
+          "if": {
+            "required": ["$action"],
+            "properties": {
+              "$action": { "const": "add" }
+            }
+          },
+          "then": {
+            "required": ["type"]
+          }
+        },
+        {
+          "if": {
+            "required": ["$action"],
+            "properties": {
+              "$action": { "const": "rename" }
+            }
+          },
+          "then": {
+            "required": ["$newName"],
+            "properties": {
+              "$newName": {
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+              }
+            }
+          }
+        }
+      ],
       "properties": {
         "$action": {
           "type": "string",
@@ -217,7 +246,7 @@
         },
         "$newName": {
           "type": "string",
-          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+          "pattern": "^(?:|[A-Za-z_][A-Za-z0-9_]*)$"
         },
         "type": {
           "$ref": "#/$defs/controlType"
@@ -237,6 +266,18 @@
         "formCaption": {
           "type": "string",
           "description": "Binary container/FormControl caption. At the root this is distinct from the textual .frm caption property."
+        },
+        "formBackColor": {
+          "$ref": "#/$defs/color",
+          "description": "Compatibility alias for the root FormControl backColor."
+        },
+        "formForeColor": {
+          "$ref": "#/$defs/color",
+          "description": "Compatibility alias for the root FormControl foreColor."
+        },
+        "formBorderColor": {
+          "$ref": "#/$defs/color",
+          "description": "Compatibility alias for the root FormControl borderColor."
         },
         "value": {
           "type": [
@@ -268,15 +309,7 @@
           "type": "string"
         },
         "siteBitFlags": {
-          "oneOf": [
-            {
-              "$ref": "#/$defs/uint32"
-            },
-            {
-              "type": "string",
-              "pattern": "^0x[0-9A-Fa-f]{1,8}$"
-            }
-          ],
+          "$ref": "#/$defs/uint32Like",
           "description": "Lossless SITE_FLAG word. When absent, the MS-OFORMS file default is 0x00000033. The structural streamed and promoteControls bits must agree with the generated or existing storage graph."
         },
         "accelerator": {
@@ -296,6 +329,22 @@
         "heightPt": {
           "type": "number",
           "exclusiveMinimum": 0
+        },
+        "left": {
+          "type": "number",
+          "description": "Textual root .frm position. Use layout.left for a control site's low-level position."
+        },
+        "top": {
+          "type": "number",
+          "description": "Textual root .frm position. Use layout.top for a control site's low-level position."
+        },
+        "width": {
+          "type": "number",
+          "description": "Textual root .frm size. Use layout.width/rawWidth for a control site's low-level size."
+        },
+        "height": {
+          "type": "number",
+          "description": "Textual root .frm size. Use layout.height/rawHeight for a control site's low-level size."
         },
         "displayedWidth": {
           "type": "integer"
@@ -355,25 +404,36 @@
         "cycle": {
           "type": "integer"
         },
+        "formCycle": {
+          "type": "integer",
+          "description": "Compatibility alias for the root FormControl cycle."
+        },
         "zoom": {
           "$ref": "#/$defs/uint32"
         },
+        "formZoom": {
+          "$ref": "#/$defs/uint32",
+          "description": "Compatibility alias for the root FormControl zoom."
+        },
         "drawBuffer": {
-          "$ref": "#/$defs/uint32"
-        },
-        "formDrawBuffer": {
-          "$ref": "#/$defs/uint32"
-        },
-        "formBooleanProperties": {
-          "oneOf": [
+          "anyOf": [
             {
-              "$ref": "#/$defs/uint32"
+              "type": "integer",
+              "minimum": -2147483648,
+              "maximum": 4294967295
             },
             {
               "type": "string",
-              "pattern": "^0x[0-9A-Fa-f]{1,8}$"
+              "pattern": "^(?:0[xX][0-9A-Fa-f]{1,8}|[0-9]+)$"
             }
-          ]
+          ],
+          "description": "The textual root DrawBuffer is a signed 32-bit integer. Container drawBuffer is an alias for unsigned formDrawBuffer and also accepts decimal or 0x-prefixed strings. The CLI applies the type-specific range."
+        },
+        "formDrawBuffer": {
+          "$ref": "#/$defs/uint32Like"
+        },
+        "formBooleanProperties": {
+          "$ref": "#/$defs/uint32Like"
         },
         "formDesignExData": {
           "type": "string",
@@ -464,7 +524,8 @@
         },
         "fontSize": {
           "type": "number",
-          "exclusiveMinimum": 0
+          "exclusiveMinimum": 0,
+          "maximum": 72
         },
         "fontWeight": {
           "type": "integer",
@@ -472,15 +533,7 @@
           "maximum": 65535
         },
         "fontEffects": {
-          "oneOf": [
-            {
-              "$ref": "#/$defs/uint32"
-            },
-            {
-              "type": "string",
-              "pattern": "^0x[0-9A-Fa-f]{1,8}$"
-            }
-          ]
+          "$ref": "#/$defs/uint32Like"
         },
         "fontCharSet": {
           "type": "integer",
@@ -560,6 +613,11 @@
             6
           ]
         },
+        "formBorderStyle": {
+          "type": "integer",
+          "description": "Compatibility alias for the root FormControl borderStyle.",
+          "enum": [0, 1]
+        },
         "formSpecialEffect": {
           "type": "integer",
           "description": "Compatibility alias for Frame specialEffect.",
@@ -573,14 +631,21 @@
         },
         "picturePosition": {
           "type": "integer",
-          "minimum": 0,
-          "maximum": 12
+          "minimum": -2147483648,
+          "maximum": 2147483647,
+          "description": "Signed native picture-position value. Preserve exported packed values; the current representation is not limited to the simple 0-12 constants."
         },
         "pictureAlignment": {
           "type": "integer",
           "minimum": 0,
           "maximum": 4,
           "description": "Image controls, or the root FormControl setting. This does not add a root picture payload."
+        },
+        "formPictureAlignment": {
+          "type": "integer",
+          "description": "Compatibility alias for the root FormControl pictureAlignment.",
+          "minimum": 0,
+          "maximum": 4
         },
         "pictureSizeMode": {
           "type": "integer",
@@ -590,6 +655,11 @@
             3
           ],
           "description": "Image controls, or the root FormControl setting. This does not add a root picture payload."
+        },
+        "formPictureSizeMode": {
+          "type": "integer",
+          "description": "Compatibility alias for the root FormControl pictureSizeMode.",
+          "enum": [0, 1, 3]
         },
         "picture": {
           "allOf": [
@@ -616,6 +686,12 @@
           "minimum": 0,
           "maximum": 3
         },
+        "formScrollBars": {
+          "type": "integer",
+          "description": "Compatibility alias for the root FormControl scrollBars.",
+          "minimum": 0,
+          "maximum": 3
+        },
         "keepScrollBarsVisible": {
           "type": "boolean",
           "description": "Frame, MultiPage, Page, or the root FormControl setting."
@@ -625,7 +701,13 @@
           "description": "Frame, MultiPage, Page, or the root FormControl setting."
         },
         "mousePointer": {
-          "type": "integer"
+          "type": "integer",
+          "enum": [0, 1, 2, 3, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 99]
+        },
+        "formMousePointer": {
+          "type": "integer",
+          "description": "Compatibility alias for the root FormControl mousePointer.",
+          "enum": [0, 1, 2, 3, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 99]
         },
         "maxLength": {
           "type": "integer",
@@ -736,7 +818,8 @@
           "type": "integer"
         },
         "dragBehavior": {
-          "type": "boolean"
+          "type": "integer",
+          "enum": [0, 1]
         },
         "imeMode": {
           "type": "integer"
@@ -840,6 +923,17 @@
       "minimum": 0,
       "maximum": 4294967295
     },
+    "uint32Like": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/uint32"
+        },
+        {
+          "type": "string",
+          "pattern": "^(?:0[xX][0-9A-Fa-f]{1,8}|[0-9]+)$"
+        }
+      ]
+    },
     "assetReference": {
       "type": "string",
       "pattern": "^(base64:|file://).+$",
@@ -852,16 +946,26 @@
       }
     },
     "color": {
-      "type": "string",
-      "anyOf": [
+      "oneOf": [
         {
-          "pattern": "^#[0-9A-Fa-f]{6}$"
+          "$ref": "#/$defs/uint32"
         },
         {
-          "pattern": "^&H[0-9A-Fa-f]{8}&$"
-        },
-        {
-          "pattern": "^system[A-Za-z0-9]+$"
+          "type": "string",
+          "anyOf": [
+            {
+              "pattern": "^#[0-9A-Fa-f]{6}$"
+            },
+            {
+              "pattern": "^&[Hh][0-9A-Fa-f]{1,8}&$"
+            },
+            {
+              "pattern": "^system[A-Za-z0-9]+$"
+            },
+            {
+              "pattern": "^[0-9]+$"
+            }
+          ]
         }
       ]
     }

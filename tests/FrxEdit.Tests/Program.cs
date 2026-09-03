@@ -338,4 +338,116 @@ Assert(
     (string?)malformedFormControl.Properties["formSiteDataGapHex"] == "0000000000000000",
     "tolerant parsing must report the recovered gap bytes");
 
-Console.WriteLine("PASS: GuidAndFont serialization and exact FormStreamData/FormSiteData/FormDesignExData boundaries");
+var existingControl = new ControlInfo(
+    "DeleteMe",
+    "CommandButton",
+    null,
+    null,
+    null,
+    null,
+    10,
+    20,
+    80,
+    24,
+    new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase),
+    null,
+    null,
+    null,
+    null,
+    null,
+    0,
+    null,
+    null,
+    null,
+    null);
+
+var legacyRemovePatch = new PatchDocument
+{
+    Properties = new Dictionary<string, Dictionary<string, JsonElement>>(StringComparer.OrdinalIgnoreCase)
+    {
+        ["DeleteMe"] = new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["$action"] = JsonSerializer.SerializeToElement("remove"),
+            ["type"] = JsonSerializer.SerializeToElement("CommandButton"),
+            ["caption"] = JsonSerializer.SerializeToElement("discarded"),
+            ["leftPt"] = JsonSerializer.SerializeToElement(42.0)
+        }
+    }
+};
+legacyRemovePatch.Normalize("TestForm");
+Assert(
+    legacyRemovePatch.Remove?.Count == 1 && legacyRemovePatch.Remove[0] == "DeleteMe",
+    "legacy remove action must normalize to the canonical remove list");
+Assert(
+    legacyRemovePatch.Properties?.ContainsKey("DeleteMe") == false,
+    "legacy remove action must discard its properties payload");
+Assert(
+    legacyRemovePatch.Layout?.ContainsKey("DeleteMe") == false,
+    "legacy remove action must discard its flattened layout payload");
+PatchValidator.Validate(legacyRemovePatch, [existingControl], formName: "TestForm");
+
+var conflictingRemovePatch = new PatchDocument
+{
+    Renames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+    {
+        ["DeleteMe"] = "RenamedControl"
+    },
+    Layout = new Dictionary<string, LayoutPatch>(StringComparer.OrdinalIgnoreCase)
+    {
+        ["DeleteMe"] = new() { LeftPt = 12 }
+    },
+    Properties = new Dictionary<string, Dictionary<string, JsonElement>>(StringComparer.OrdinalIgnoreCase)
+    {
+        ["DeleteMe"] = new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["$action"] = JsonSerializer.SerializeToElement("remove")
+        }
+    }
+};
+conflictingRemovePatch.Normalize("TestForm");
+AssertThrows<CliException>(
+    () => PatchValidator.Validate(conflictingRemovePatch, [existingControl], formName: "TestForm"),
+    "explicit rename/layout conflicts must remain invalid after legacy remove normalization",
+    "cannot also be renamed");
+
+var conflictingRemoveLayoutPatch = new PatchDocument
+{
+    Layout = new Dictionary<string, LayoutPatch>(StringComparer.OrdinalIgnoreCase)
+    {
+        ["DeleteMe"] = new() { LeftPt = 12 }
+    },
+    Properties = new Dictionary<string, Dictionary<string, JsonElement>>(StringComparer.OrdinalIgnoreCase)
+    {
+        ["DeleteMe"] = new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["$action"] = JsonSerializer.SerializeToElement("remove")
+        }
+    }
+};
+conflictingRemoveLayoutPatch.Normalize("TestForm");
+AssertThrows<CliException>(
+    () => PatchValidator.Validate(conflictingRemoveLayoutPatch, [existingControl], formName: "TestForm"),
+    "explicit layout conflicts must remain invalid after legacy remove normalization",
+    "cannot also receive a layout patch");
+
+var conflictingRemoveMovePatch = new PatchDocument
+{
+    Move = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+    {
+        ["DeleteMe"] = "DestinationFrame"
+    },
+    Properties = new Dictionary<string, Dictionary<string, JsonElement>>(StringComparer.OrdinalIgnoreCase)
+    {
+        ["DeleteMe"] = new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["$action"] = JsonSerializer.SerializeToElement("remove")
+        }
+    }
+};
+conflictingRemoveMovePatch.Normalize("TestForm");
+AssertThrows<CliException>(
+    () => PatchValidator.Validate(conflictingRemoveMovePatch, [existingControl], formName: "TestForm"),
+    "explicit move conflicts must remain invalid after legacy remove normalization",
+    "cannot also be moved");
+
+Console.WriteLine("PASS: focused binary-boundary and patch-contract regressions");
